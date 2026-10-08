@@ -4,6 +4,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import kotlinx.serialization.json.Json
 import org.junit.Test
 import java.io.File
 
@@ -45,6 +46,21 @@ class LinkDirectoryTest {
         assertNull(loaded.currentId)
         assertEquals("留下的话", restored.lines("a").single().text)
         assertEquals("留下的话", log.lines("a").single().text)
+    }
+
+    @Test
+    fun listTitleUsesDisplayNameThenRoleName() {
+        val named = link("a", "Mac", "alpha").copy(displayName = "显示名")
+        assertEquals("显示名", named.listTitle())
+        assertEquals("alpha", named.copy(displayName = "").listTitle())
+        assertEquals("角色", named.copy(displayName = "", roleName = "").listTitle())
+    }
+
+    @Test
+    fun oldHistoryLineWithoutNoticeStillLoads() {
+        val line = Json.decodeFromString<ChatLine>("""{"outgoing":true,"text":"hi"}""")
+        assertFalse(line.notice)
+        assertEquals("hi", line.text)
     }
 
     @Test

@@ -41,13 +41,31 @@ class RelayClient(private val http: OkHttpClient = OkHttpClient.Builder()
         }
     }
 
-    fun open(relay: String, token: String, onMessage: (JSONObject) -> Unit): WebSocket {
+    fun open(
+        relay: String,
+        token: String,
+        onMessage: (JSONObject) -> Unit,
+        onConnection: (Boolean) -> Unit = {},
+    ): WebSocket {
         val base = relay.trimEnd('/').replaceFirst("https://", "wss://").replaceFirst("http://", "ws://")
         val request = Request.Builder().url("$base/v1/ws?token=$token").build()
         return http.newWebSocket(request, object : WebSocketListener() {
+            override fun onOpen(webSocket: WebSocket, response: okhttp3.Response) {
+                onConnection(true)
+            }
+
             override fun onMessage(webSocket: WebSocket, text: String) {
                 val json = runCatching { JSONObject(text) }.getOrNull() ?: return
                 onMessage(json)
+            }
+
+            override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                webSocket.close(code, reason)
+                onConnection(false)
+            }
+
+            override fun onFailure(webSocket: WebSocket, t: Throwable, response: okhttp3.Response?) {
+                onConnection(false)
             }
         })
     }

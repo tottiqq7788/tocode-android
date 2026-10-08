@@ -16,7 +16,13 @@ data class AppLink(
 )
 
 @Serializable
-data class ChatLine(val outgoing: Boolean, val text: String)
+data class ChatLine(
+    val outgoing: Boolean,
+    val text: String,
+    val notice: Boolean = false,
+)
+
+fun AppLink.listTitle(): String = displayName.ifBlank { roleName }.ifBlank { "角色" }
 
 @Serializable
 data class PhoneState(
