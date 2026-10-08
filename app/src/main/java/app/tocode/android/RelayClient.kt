@@ -45,18 +45,41 @@ class RelayClient(private val http: OkHttpClient = OkHttpClient.Builder()
         relay: String,
         token: String,
         onMessage: (JSONObject) -> Unit,
+        onFile: (JSONObject, ByteArray) -> Unit = { _, _ -> },
         onConnection: (Boolean) -> Unit = {},
     ): WebSocket {
         val base = relay.trimEnd('/').replaceFirst("https://", "wss://").replaceFirst("http://", "ws://")
         val request = Request.Builder().url("$base/v1/ws?token=$token").build()
         return http.newWebSocket(request, object : WebSocketListener() {
+            private var pendingFile: JSONObject? = null
+
             override fun onOpen(webSocket: WebSocket, response: okhttp3.Response) {
                 onConnection(true)
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
                 val json = runCatching { JSONObject(text) }.getOrNull() ?: return
-                onMessage(json)
+                if (pendingFile != null) {
+                    pendingFile = null
+                    onMessage(JSONObject().put("op", "error").put("message", "文件帧不完整"))
+                }
+                if (json.optString("op") == "file") {
+                    pendingFile = json
+                } else {
+                    onMessage(json)
+                }
+            }
+
+            override fun onMessage(webSocket: WebSocket, bytes: okio.ByteString) {
+                val header = pendingFile
+                pendingFile = null
+                if (header == null) return
+                val size = header.optInt("size", -1)
+                if (size != bytes.size) {
+                    onMessage(JSONObject().put("op", "error").put("message", "文件长度不匹配"))
+                    return
+                }
+                onFile(header, bytes.toByteArray())
             }
 
             override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {

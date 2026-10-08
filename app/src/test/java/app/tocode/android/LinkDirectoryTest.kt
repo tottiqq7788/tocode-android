@@ -49,6 +49,30 @@ class LinkDirectoryTest {
     }
 
     @Test
+    fun receivedFileStaysAfterTheLinkIsRemoved() {
+        val root = File.createTempFile("tocode-files", "").apply {
+            delete()
+            mkdirs()
+        }
+        val disk = LinkDisk(File(root, "phone-state.json"), File(root, "history"))
+        val relative = disk.saveFile("a", "note.txt", "hello-file".toByteArray())
+        val line = ChatLine(
+            outgoing = false,
+            text = "",
+            fileName = "note.txt",
+            fileKind = "file",
+            filePath = relative,
+        )
+        disk.appendHistory("a", line)
+        val directory = LinkDirectory(listOf(link("a", "Mac", "alpha")), "a")
+        directory.remove("a")
+        disk.save(PhoneState("phone", "Pixel", directory.all(), directory.currentId))
+        val (_, restored) = disk.load()
+        assertEquals("note.txt", restored.lines("a").single().fileName)
+        assertEquals("hello-file", disk.file(relative).readText())
+    }
+
+    @Test
     fun listTitleUsesDisplayNameThenRoleName() {
         val named = link("a", "Mac", "alpha").copy(displayName = "显示名")
         assertEquals("显示名", named.listTitle())

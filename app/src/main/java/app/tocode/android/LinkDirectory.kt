@@ -20,6 +20,9 @@ data class ChatLine(
     val outgoing: Boolean,
     val text: String,
     val notice: Boolean = false,
+    val fileName: String = "",
+    val fileKind: String = "",
+    val filePath: String = "",
 )
 
 fun AppLink.listTitle(): String = displayName.ifBlank { roleName }.ifBlank { "角色" }
@@ -105,5 +108,22 @@ class LinkDisk(private val stateFile: File, private val historyDirectory: File) 
         historyDirectory.mkdirs()
         val file = File(historyDirectory, "$linkId.jsonl")
         file.appendText(json.encodeToString(line) + "\n")
+    }
+
+    fun receivedDirectory(): File = File(historyDirectory.parentFile, "received")
+
+    fun saveFile(linkId: String, name: String, bytes: ByteArray): String {
+        val folder = File(receivedDirectory(), safeComponent(linkId))
+        folder.mkdirs()
+        val stored = "${System.currentTimeMillis()}_${safeComponent(name).ifBlank { "file" }}"
+        File(folder, stored).writeBytes(bytes)
+        return "${safeComponent(linkId)}/$stored"
+    }
+
+    fun file(relativePath: String): File = File(receivedDirectory(), relativePath)
+
+    private fun safeComponent(value: String): String {
+        val cleaned = value.replace("/", "_").replace("\\", "_").replace("\u0000", "")
+        return cleaned.trim().ifBlank { "file" }.take(120)
     }
 }
