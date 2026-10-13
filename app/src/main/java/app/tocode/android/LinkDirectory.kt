@@ -9,23 +9,9 @@ import java.io.File
 data class AppLink(
     val id: String,
     val macName: String,
-    val roleName: String,
-    val displayName: String,
     val relay: String,
     val token: String,
 )
-
-@Serializable
-data class ChatLine(
-    val outgoing: Boolean,
-    val text: String,
-    val notice: Boolean = false,
-    val fileName: String = "",
-    val fileKind: String = "",
-    val filePath: String = "",
-)
-
-fun AppLink.listTitle(): String = displayName.ifBlank { roleName }.ifBlank { "角色" }
 
 @Serializable
 data class PhoneState(
@@ -67,63 +53,27 @@ class LinkDirectory(initial: List<AppLink> = emptyList(), selectedId: String? = 
     }
 }
 
-class SessionLog {
-    private val lines = linkedMapOf<String, MutableList<ChatLine>>()
-
-    fun append(linkId: String, line: ChatLine) {
-        lines.getOrPut(linkId) { mutableListOf() }.add(line)
-    }
-
-    fun lines(linkId: String): List<ChatLine> = lines[linkId]?.toList().orEmpty()
-}
-
-class LinkDisk(private val stateFile: File, private val historyDirectory: File) {
+class LinkDisk(private val stateFile: File) {
     private val json = Json { ignoreUnknownKeys = true }
 
-    fun load(): Pair<PhoneState, SessionLog> {
-        val state = if (stateFile.exists()) {
-            json.decodeFromString<PhoneState>(stateFile.readText())
-        } else {
-            PhoneState(androidId = java.util.UUID.randomUUID().toString(), androidName = "Android")
+    fun load(): PhoneState {
+        if (!stateFile.exists()) {
+            return PhoneState(androidId = java.util.UUID.randomUUID().toString(), androidName = "Android")
         }
-        val log = SessionLog()
-        if (historyDirectory.isDirectory) {
-            historyDirectory.listFiles()?.forEach { file ->
-                if (file.extension != "jsonl") return@forEach
-                file.readLines().forEach { line ->
-                    if (line.isBlank()) return@forEach
-                    log.append(file.nameWithoutExtension, json.decodeFromString<ChatLine>(line))
-                }
-            }
-        }
-        return state to log
+        return json.decodeFromString<PhoneState>(stateFile.readText())
     }
 
     fun save(state: PhoneState) {
         stateFile.parentFile?.mkdirs()
         stateFile.writeText(json.encodeToString(state))
     }
+}
 
-    fun appendHistory(linkId: String, line: ChatLine) {
-        historyDirectory.mkdirs()
-        val file = File(historyDirectory, "$linkId.jsonl")
-        file.appendText(json.encodeToString(line) + "\n")
-    }
-
-    fun receivedDirectory(): File = File(historyDirectory.parentFile, "received")
-
-    fun saveFile(linkId: String, name: String, bytes: ByteArray): String {
-        val folder = File(receivedDirectory(), safeComponent(linkId))
-        folder.mkdirs()
-        val stored = "${System.currentTimeMillis()}_${safeComponent(name).ifBlank { "file" }}"
-        File(folder, stored).writeBytes(bytes)
-        return "${safeComponent(linkId)}/$stored"
-    }
-
-    fun file(relativePath: String): File = File(receivedDirectory(), relativePath)
-
-    private fun safeComponent(value: String): String {
-        val cleaned = value.replace("/", "_").replace("\\", "_").replace("\u0000", "")
-        return cleaned.trim().ifBlank { "file" }.take(120)
-    }
+fun prepareRemoteLayout(filesDir: File) {
+    val marker = File(filesDir, "remote-layout")
+    if (marker.exists()) return
+    File(filesDir, "phone-state.json").delete()
+    File(filesDir, "history").deleteRecursively()
+    File(filesDir, "received").deleteRecursively()
+    marker.writeText("1")
 }

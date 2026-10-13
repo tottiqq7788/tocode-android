@@ -33,53 +33,36 @@ class RelayClient(private val http: OkHttpClient = OkHttpClient.Builder()
             return AppLink(
                 id = json.getString("link_id"),
                 macName = json.optString("device_name", "Mac"),
-                roleName = json.optString("role_name", ""),
-                displayName = json.optString("display_name", json.optString("role_name", "关联")),
                 relay = relay.trimEnd('/'),
                 token = json.getString("link_token"),
             )
         }
     }
 
+    fun delete(link: AppLink) {
+        val request = Request.Builder()
+            .url("${link.relay}/v1/links/${link.id}")
+            .header("Authorization", "Bearer ${link.token}")
+            .delete()
+            .build()
+        http.newCall(request).execute().close()
+    }
+
     fun open(
         relay: String,
         token: String,
         onMessage: (JSONObject) -> Unit,
-        onFile: (JSONObject, ByteArray) -> Unit = { _, _ -> },
         onConnection: (Boolean) -> Unit = {},
     ): WebSocket {
-        val base = relay.trimEnd('/').replaceFirst("https://", "wss://").replaceFirst("http://", "ws://")
-        val request = Request.Builder().url("$base/v1/ws?token=$token").build()
+        val request = Request.Builder().url(socketURL(relay, token)).build()
         return http.newWebSocket(request, object : WebSocketListener() {
-            private var pendingFile: JSONObject? = null
-
             override fun onOpen(webSocket: WebSocket, response: okhttp3.Response) {
                 onConnection(true)
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
                 val json = runCatching { JSONObject(text) }.getOrNull() ?: return
-                if (pendingFile != null) {
-                    pendingFile = null
-                    onMessage(JSONObject().put("op", "error").put("message", "文件帧不完整"))
-                }
-                if (json.optString("op") == "file") {
-                    pendingFile = json
-                } else {
-                    onMessage(json)
-                }
-            }
-
-            override fun onMessage(webSocket: WebSocket, bytes: okio.ByteString) {
-                val header = pendingFile
-                pendingFile = null
-                if (header == null) return
-                val size = header.optInt("size", -1)
-                if (size != bytes.size) {
-                    onMessage(JSONObject().put("op", "error").put("message", "文件长度不匹配"))
-                    return
-                }
-                onFile(header, bytes.toByteArray())
+                onMessage(json)
             }
 
             override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
@@ -98,3 +81,17 @@ fun socketURL(relay: String, token: String): String {
     val base = relay.trimEnd('/').replaceFirst("https://", "wss://").replaceFirst("http://", "ws://")
     return "$base/v1/ws?token=$token"
 }
+
+val remoteActions = listOf(
+    "status" to "设备状态",
+    "blackout" to "临时黑屏",
+    "hidden" to "隐藏文件",
+    "finder-follow" to "访达跟随",
+    "codex-follow" to "Codex 跟随",
+    "wheel-vertical" to "垂直滚轮",
+    "wheel-horizontal" to "横向滚轮",
+    "finder-move" to "访达 X/V 移动",
+    "finder-cmdq" to "访达强退快捷键",
+    "double-cmdq" to "双击 Cmd-Q",
+    "login" to "开机自启",
+)
