@@ -95,3 +95,9 @@ val remoteActions = listOf(
     "double-cmdq" to "双击 Cmd-Q",
     "login" to "开机自启",
 )
+
+val remoteGroups = listOf(
+    "屏幕与系统" to listOf("status", "blackout", "login"),
+    "访达与跟随" to listOf("finder-follow", "codex-follow", "hidden", "finder-move", "finder-cmdq", "double-cmdq"),
+    "滚轮方向" to listOf("wheel-vertical", "wheel-horizontal"),
+)

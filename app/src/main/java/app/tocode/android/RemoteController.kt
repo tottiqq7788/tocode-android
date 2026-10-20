@@ -1,0 +1,448 @@
+package app.tocode.android
+
+import android.os.Handler
+import android.os.Looper
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import okhttp3.WebSocket
+import org.json.JSONObject
+import java.util.UUID
+import java.util.concurrent.Executors
+
+class AppDesk {
+    var installed by mutableStateOf<Boolean?>(null)
+    var running by mutableStateOf(false)
+    var pathConfigured by mutableStateOf(false)
+    var sessions by mutableStateOf<List<AppSession>>(emptyList())
+    var sessionsLoaded by mutableStateOf(false)
+    var entries by mutableStateOf<List<AppEntry>>(emptyList())
+    var treeLoaded by mutableStateOf(false)
+    var treeNotice by mutableStateOf("")
+    var turns by mutableStateOf<List<AppTurn>>(emptyList())
+    var turnsLoading by mutableStateOf(false)
+    var openSession by mutableStateOf<AppSession?>(null)
+    var tab by mutableStateOf("sessions")
+    var notice by mutableStateOf("")
+    var creating by mutableStateOf(false)
+    var chatRequest by mutableStateOf<String?>(null)
+    var pendingText = ""
+    var restoreDraft by mutableStateOf("")
+
+    val sending: Boolean get() = chatRequest != null
+    val canChat: Boolean get() = installed == true && running
+}
+
+private data class AppWait(val linkId: String, val kind: String, val sessionId: String)
+
+class RemoteController(
+    private val directory: LinkDirectory,
+    private val disk: LinkDisk,
+    private var phone: PhoneState,
+    private val client: RelayClient,
+) {
+    var scanning by mutableStateOf(false)
+    var pairing by mutableStateOf(false)
+    var scanNotice by mutableStateOf("")
+    var selectedId by mutableStateOf(directory.currentId)
+    private var linkVersion by mutableIntStateOf(0)
+    val online = mutableStateMapOf<String, Boolean>()
+    val pending = mutableStateMapOf<String, String>()
+    val pendingAction = mutableStateMapOf<String, String>()
+    val lastAction = mutableStateMapOf<String, String>()
+    val lastResult = mutableStateMapOf<String, String>()
+    val lastOk = mutableStateMapOf<String, Boolean>()
+    private val desks = linkedMapOf<String, AppDesk>()
+    private val appWait = linkedMapOf<String, AppWait>()
+    private val sockets = linkedMapOf<String, WebSocket>()
+    private val retryDelay = linkedMapOf<String, Long>()
+    private val worker = Executors.newSingleThreadExecutor()
+    private val main = Handler(Looper.getMainLooper())
+
+    fun links(): List<AppLink> {
+        linkVersion
+        return directory.all()
+    }
+
+    fun selected(): AppLink? {
+        val all = links()
+        return selectedId?.let { id -> all.firstOrNull { it.id == id } } ?: all.firstOrNull()
+    }
+
+    fun desk(id: String): AppDesk = desks.getOrPut(id) { AppDesk() }
+
+    fun ensureConnected() {
+        directory.all().filter { online[it.id] != true }.forEach { connect(it) }
+        selected()?.let { if (online[it.id] == true) refreshApp(it.id) }
+    }
+
+    fun openScan() {
+        scanning = true
+        scanNotice = ""
+    }
+
+    fun closeScan() {
+        scanning = false
+        pairing = false
+    }
+
+    fun select(id: String) {
+        if (!directory.select(id)) return
+        selectedId = id
+        persist()
+        refreshApp(id)
+    }
+
+    fun showTab(id: String, tab: String) {
+        val desk = desk(id)
+        desk.tab = tab
+        desk.notice = ""
+        refreshApp(id)
+    }
+
+    fun refreshCurrent(id: String) {
+        val desk = desk(id)
+        desk.notice = ""
+        if (online[id] != true) {
+            directory.all().firstOrNull { it.id == id }?.let { connect(it) }
+            return
+        }
+        refreshApp(id)
+        val session = desk.openSession
+        if (session != null && !desk.sending) {
+            desk.turnsLoading = true
+            sendApp(id, "messages", sessionId = session.id)
+        }
+    }
+
+    fun openSession(id: String, session: AppSession) {
+        val desk = desk(id)
+        if (chatEntranceClosed(desk.installed)) {
+            desk.notice = "这台电脑没有 Hermes"
+            return
+        }
+        desk.openSession = session
+        desk.turns = emptyList()
+        desk.turnsLoading = true
+        desk.chatRequest = null
+        desk.notice = ""
+        sendApp(id, "messages", sessionId = session.id)
+    }
+
+    fun closeChat(id: String) {
+        val desk = desk(id)
+        desk.openSession = null
+        desk.chatRequest = null
+        desk.notice = ""
+        if (desk.installed == true) sendApp(id, "sessions", quiet = true)
+    }
+
+    fun createSession(id: String, title: String) {
+        val desk = desk(id)
+        if (desk.creating) return
+        if (!desk.canChat) {
+            desk.notice = hermesClosedText(desk)
+            return
+        }
+        desk.notice = ""
+        if (sendApp(id, "session_create", title = title.trim().ifBlank { "新会话" }) != null) {
+            desk.creating = true
+        }
+    }
+
+    fun sendChat(id: String, text: String): Boolean {
+        val desk = desk(id)
+        val session = desk.openSession ?: return false
+        val trimmed = text.trim()
+        if (trimmed.isEmpty() || desk.sending) return false
+        if (!desk.canChat) {
+            desk.notice = hermesClosedText(desk)
+            return false
+        }
+        val requestId = sendApp(id, "chat", sessionId = session.id, text = trimmed) ?: return false
+        desk.turns = desk.turns + AppTurn("user", trimmed)
+        desk.pendingText = trimmed
+        desk.chatRequest = requestId
+        desk.notice = ""
+        return true
+    }
+
+    fun refreshApp(id: String) {
+        sendApp(id, "status", quiet = true)
+    }
+
+    fun submitCode(raw: String) {
+        if (pairing) return
+        val payload = parsePairingPayload(raw)
+        if (payload == null) {
+            scanNotice = "这不是 Tocode 的配对二维码"
+            return
+        }
+        pairing = true
+        scanNotice = ""
+        worker.execute {
+            runCatching {
+                client.redeem(payload.relay, payload.code, phone.androidId, phone.androidName)
+            }.onSuccess { link ->
+                main.post {
+                    directory.upsert(link)
+                    directory.select(link.id)
+                    selectedId = link.id
+                    scanning = false
+                    pairing = false
+                    persist()
+                    connect(link)
+                }
+            }.onFailure {
+                main.post {
+                    pairing = false
+                    scanNotice = "绑定失败：二维码可能已过期，请在 Mac 上重新生成"
+                }
+            }
+        }
+    }
+
+    fun send(action: String, title: String) {
+        val link = selected() ?: return
+        if (pending[link.id] != null) return
+        val socket = sockets[link.id]
+        lastAction[link.id] = title
+        if (socket == null || online[link.id] != true) {
+            lastResult[link.id] = "这台 Mac 还没连上"
+            lastOk[link.id] = false
+            return
+        }
+        val requestId = UUID.randomUUID().toString()
+        pending[link.id] = requestId
+        pendingAction[link.id] = action
+        lastResult[link.id] = "正在执行…"
+        lastOk.remove(link.id)
+        val body = JSONObject()
+            .put("op", "command")
+            .put("link_id", link.id)
+            .put("request_id", requestId)
+            .put("action", action)
+        socket.send(body.toString())
+        main.postDelayed({
+            if (pending[link.id] == requestId) {
+                pending.remove(link.id)
+                pendingAction.remove(link.id)
+                lastResult[link.id] = "Mac 没有回应，请稍后再试"
+                lastOk[link.id] = false
+            }
+        }, COMMAND_TIMEOUT_MS)
+    }
+
+    fun unlink(id: String) {
+        val link = directory.all().firstOrNull { it.id == id } ?: return
+        sockets.remove(id)?.close(1000, "unlink")
+        forget(id)
+        worker.execute { runCatching { client.delete(link) } }
+    }
+
+    private fun hermesClosedText(desk: AppDesk): String =
+        if (desk.installed == false) "这台电脑没有 Hermes" else "这台电脑的 Hermes 没开"
+
+    private fun forget(id: String) {
+        online.remove(id)
+        retryDelay.remove(id)
+        pending.remove(id)
+        pendingAction.remove(id)
+        desks.remove(id)
+        directory.remove(id)
+        if (selectedId == id) selectedId = directory.currentId
+        persist()
+    }
+
+    private fun sendApp(
+        id: String,
+        kind: String,
+        sessionId: String = "",
+        title: String = "",
+        text: String = "",
+        quiet: Boolean = false,
+    ): String? {
+        if (directory.all().none { it.id == id }) return null
+        val socket = sockets[id]
+        if (socket == null || online[id] != true) {
+            if (!quiet) desk(id).notice = "这台 Mac 还没连上，正在重连…"
+            return null
+        }
+        val requestId = UUID.randomUUID().toString()
+        appWait[requestId] = AppWait(id, kind, sessionId)
+        val body = JSONObject()
+            .put("op", "app")
+            .put("request_id", requestId)
+            .put("kind", kind)
+            .put("session_id", sessionId)
+            .put("title", title)
+            .put("text", text)
+        socket.send(body.toString())
+        val timeout = if (kind == "chat") CHAT_TIMEOUT_MS else APP_TIMEOUT_MS
+        main.postDelayed({
+            val wait = appWait.remove(requestId) ?: return@postDelayed
+            failApp(wait, requestId, "Mac 没有回应，请稍后再试")
+        }, timeout)
+        return requestId
+    }
+
+    private fun connect(link: AppLink) {
+        sockets.remove(link.id)?.close(1000, "reconnect")
+        online.remove(link.id)
+        var socket: WebSocket? = null
+        socket = client.open(link.relay, link.token, { message ->
+            main.post { if (sockets[link.id] === socket) handle(link.id, message) }
+        }) { connected ->
+            main.post {
+                if (sockets[link.id] !== socket) return@post
+                online[link.id] = connected
+                if (connected) {
+                    retryDelay.remove(link.id)
+                    refreshApp(link.id)
+                } else {
+                    dropWaits(link.id)
+                    scheduleRetry(link, socket)
+                }
+            }
+        }
+        sockets[link.id] = socket
+    }
+
+    private fun scheduleRetry(link: AppLink, failed: WebSocket?) {
+        val delay = retryDelay[link.id] ?: RETRY_START_MS
+        retryDelay[link.id] = (delay * 2).coerceAtMost(RETRY_MAX_MS)
+        main.postDelayed({
+            if (sockets[link.id] === failed && directory.all().any { it.id == link.id }) connect(link)
+        }, delay)
+    }
+
+    private fun dropWaits(linkId: String) {
+        val lost = appWait.filterValues { it.linkId == linkId }
+        lost.forEach { (requestId, wait) ->
+            appWait.remove(requestId)
+            failApp(wait, requestId, "和这台 Mac 的连接断开了")
+        }
+        if (pending.remove(linkId) != null) {
+            pendingAction.remove(linkId)
+            lastResult[linkId] = "和这台 Mac 的连接断开了"
+            lastOk[linkId] = false
+        }
+    }
+
+    private fun handle(linkId: String, message: JSONObject) {
+        when (message.optString("op")) {
+            "ready" -> refreshApp(linkId)
+            "app_result" -> applyApp(linkId, message)
+            "result" -> {
+                val requestId = message.optString("request_id")
+                if (requestId.isNotBlank() && pending[linkId] != requestId) return
+                pending.remove(linkId)
+                pendingAction.remove(linkId)
+                val ok = message.optBoolean("ok")
+                lastResult[linkId] = message.optString("text").ifBlank { if (ok) "已完成" else "失败" }
+                lastOk[linkId] = ok
+            }
+            "error" -> {
+                val requestId = message.optString("request_id")
+                val text = message.optString("message").ifBlank { "失败" }
+                val wait = appWait.remove(requestId)
+                if (wait != null) {
+                    failApp(wait, requestId, text)
+                } else if (pending[linkId] != null) {
+                    pending.remove(linkId)
+                    pendingAction.remove(linkId)
+                    lastResult[linkId] = text
+                    lastOk[linkId] = false
+                }
+            }
+            "link_revoked" -> {
+                sockets.remove(linkId)?.close(1000, "revoked")
+                forget(linkId)
+            }
+        }
+    }
+
+    private fun failApp(wait: AppWait, requestId: String, text: String) {
+        val desk = desk(wait.linkId)
+        when (wait.kind) {
+            "status" -> return
+            "session_create" -> desk.creating = false
+            "messages" -> desk.turnsLoading = false
+            "tree" -> desk.treeLoaded = true
+            "chat" -> if (desk.chatRequest == requestId) {
+                desk.chatRequest = null
+                val last = desk.turns.lastOrNull()
+                if (last?.role == "user" && last.text == desk.pendingText) desk.turns = desk.turns.dropLast(1)
+                desk.restoreDraft = desk.pendingText
+                desk.pendingText = ""
+            }
+        }
+        desk.notice = text
+    }
+
+    private fun applyApp(linkId: String, message: JSONObject) {
+        val requestId = message.optString("request_id")
+        val wait = appWait.remove(requestId) ?: return
+        val ok = message.optBoolean("ok")
+        val text = message.optString("text")
+        if (!ok) {
+            failApp(wait, requestId, text.ifBlank { "失败" })
+            return
+        }
+        val desk = desk(linkId)
+        val body = message.optJSONObject("body") ?: JSONObject()
+        when (wait.kind) {
+            "status" -> {
+                desk.installed = body.optBoolean("hermes_installed")
+                desk.running = body.optBoolean("hermes_running")
+                desk.pathConfigured = body.optBoolean("path_configured")
+                if (desk.canChat) sendApp(linkId, "sessions", quiet = true) else desk.sessionsLoaded = true
+                if (desk.pathConfigured) sendApp(linkId, "tree", quiet = true) else desk.treeLoaded = true
+            }
+            "sessions" -> {
+                desk.sessions = parseSessions(body)
+                desk.sessionsLoaded = true
+            }
+            "session_create" -> {
+                desk.creating = false
+                val row = body.optJSONObject("session")
+                val id = row?.optString("id").orEmpty()
+                if (id.isNotBlank()) {
+                    val session = AppSession(id, row?.optString("title").orEmpty().ifBlank { "新会话" })
+                    desk.sessions = listOf(session) + desk.sessions.filter { it.id != id }
+                    openSession(linkId, session)
+                }
+            }
+            "messages" -> if (desk.openSession?.id == wait.sessionId) {
+                desk.turns = parseTurns(body)
+                desk.turnsLoading = false
+            }
+            "chat" -> if (desk.chatRequest == requestId) {
+                desk.chatRequest = null
+                desk.pendingText = ""
+                if (desk.openSession?.id == wait.sessionId) desk.turns = desk.turns + AppTurn("assistant", text)
+            }
+            "tree" -> {
+                desk.entries = parseEntries(body)
+                desk.treeLoaded = true
+                desk.treeNotice = text
+            }
+        }
+    }
+
+    private fun persist() {
+        phone = phone.copy(links = directory.all(), currentId = selectedId)
+        disk.save(phone)
+        linkVersion += 1
+    }
+
+    private companion object {
+        const val COMMAND_TIMEOUT_MS = 20_000L
+        const val APP_TIMEOUT_MS = 30_000L
+        const val CHAT_TIMEOUT_MS = 6 * 60_000L
+        const val RETRY_START_MS = 2_000L
+        const val RETRY_MAX_MS = 30_000L
+    }
+}

@@ -56,6 +56,35 @@ class LinkDirectoryTest {
         assertTrue(remoteActions.none { it.first == "shell" || it.first == "quit" })
     }
 
+    @Test
+    fun everyButtonHasOneGroup() {
+        val grouped = remoteGroups.flatMap { it.second }
+        assertEquals(grouped.size, grouped.toSet().size)
+        assertEquals(remoteActions.map { it.first }.toSet(), grouped.toSet())
+    }
+
+    @Test
+    fun folderBrowserShowsOneLevelFoldersFirst() {
+        val entries = listOf(
+            AppEntry("b.txt", "b.txt", "file"),
+            AppEntry("src", "src", "directory"),
+            AppEntry("src/main", "main", "directory"),
+            AppEntry("src/main/App.kt", "App.kt", "file"),
+            AppEntry("A.md", "A.md", "file"),
+        )
+        assertEquals(listOf("src", "A.md", "b.txt"), childrenOf(entries, "").map { it.path })
+        assertEquals(listOf("src/main"), childrenOf(entries, "src").map { it.path })
+        assertEquals(listOf("src", "src/main"), breadcrumb("src/main"))
+        assertTrue(breadcrumb("").isEmpty())
+    }
+
+    @Test
+    fun chatStaysClosedWithoutHermes() {
+        assertTrue(chatEntranceClosed(false))
+        assertFalse(chatEntranceClosed(true))
+        assertFalse(chatEntranceClosed(null))
+    }
+
     private fun link(id: String, mac: String) = AppLink(
         id = id,
         macName = mac,
