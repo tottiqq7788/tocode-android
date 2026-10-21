@@ -48,9 +48,38 @@ data class AppPreview(
     val loading: Boolean = false,
     val format: String = "text",
     val content: String = "",
+    val next: Int = 0,
     val truncated: Boolean = false,
+    val loadingMore: Boolean = false,
     val notice: String = "",
 )
+
+data class PathSpan(val start: Int, val end: Int, val path: String, val folder: Boolean)
+
+fun pathSpans(text: String, entries: List<AppEntry>): List<PathSpan> {
+    val used = BooleanArray(text.length)
+    val found = mutableListOf<PathSpan>()
+    val ordered = entries.filter { it.path.isNotEmpty() }.sortedByDescending { it.path.length }
+    for (entry in ordered) {
+        var from = 0
+        while (from < text.length) {
+            val at = text.indexOf(entry.path, from)
+            if (at < 0) break
+            val end = at + entry.path.length
+            val beforeOk = at == 0 || text[at - 1] == '/' || !text[at - 1].isPathChar()
+            val afterOk = end == text.length || !text[end].isPathChar()
+            if (beforeOk && afterOk && (at until end).all { !used[it] }) {
+                for (index in at until end) used[index] = true
+                found.add(PathSpan(at, end, entry.path, entry.isFolder()))
+            }
+            from = at + 1
+        }
+    }
+    return found.sortedBy { it.start }
+}
+
+private fun Char.isPathChar(): Boolean =
+    isLetterOrDigit() || this == '/' || this == '_' || this == '.' || this == '-' || this == '+'
 
 fun chatEntranceClosed(hermesInstalled: Boolean?): Boolean = hermesInstalled == false
 

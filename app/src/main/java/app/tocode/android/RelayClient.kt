@@ -85,19 +85,65 @@ fun socketURL(relay: String, token: String): String {
 val remoteActions = listOf(
     "status" to "设备状态",
     "blackout" to "临时黑屏",
-    "hidden" to "隐藏文件",
-    "finder-follow" to "访达跟随",
-    "codex-follow" to "Codex 跟随",
-    "wheel-vertical" to "垂直滚轮",
-    "wheel-horizontal" to "横向滚轮",
-    "finder-move" to "访达 X/V 移动",
-    "finder-cmdq" to "访达强退快捷键",
-    "double-cmdq" to "双击 Cmd-Q",
-    "login" to "开机自启",
+    "blackout-dismiss" to "取消黑屏",
+    "lock" to "锁定屏幕",
 )
 
 val remoteGroups = listOf(
-    "屏幕与系统" to listOf("status", "blackout", "login"),
-    "访达与跟随" to listOf("finder-follow", "codex-follow", "hidden", "finder-move", "finder-cmdq", "double-cmdq"),
-    "滚轮方向" to listOf("wheel-vertical", "wheel-horizontal"),
+    "屏幕" to listOf("status", "blackout", "blackout-dismiss", "lock"),
 )
+
+data class RemoteWindow(val title: String, val windowId: Long, val pid: Int, val front: Boolean)
+
+data class RemoteSpace(
+    val title: String,
+    val current: Boolean,
+    val fullscreen: Boolean,
+    val displayId: String,
+    val spaceId: Long,
+    val windows: List<RemoteWindow>,
+)
+
+data class RemoteDisplay(val title: String, val spaces: List<RemoteSpace>)
+
+fun parseRemoteDisplays(body: JSONObject): List<RemoteDisplay> {
+    val rows = body.optJSONArray("displays") ?: return emptyList()
+    return buildList {
+        for (index in 0 until rows.length()) {
+            val row = rows.optJSONObject(index) ?: continue
+            val spaces = row.optJSONArray("spaces")
+            add(RemoteDisplay(row.optString("title"), parseRemoteSpaces(spaces)))
+        }
+    }
+}
+
+private fun parseRemoteSpaces(rows: org.json.JSONArray?): List<RemoteSpace> {
+    if (rows == null) return emptyList()
+    return buildList {
+        for (index in 0 until rows.length()) {
+            val row = rows.optJSONObject(index) ?: continue
+            val windows = row.optJSONArray("windows")
+            add(
+                RemoteSpace(
+                    title = row.optString("title").ifBlank { "桌面" },
+                    current = row.optBoolean("current"),
+                    fullscreen = row.optString("kind") == "fullscreen",
+                    displayId = row.optString("display_id"),
+                    spaceId = row.optLong("space_id"),
+                    windows = parseRemoteWindows(windows),
+                )
+            )
+        }
+    }
+}
+
+private fun parseRemoteWindows(rows: org.json.JSONArray?): List<RemoteWindow> {
+    if (rows == null) return emptyList()
+    return buildList {
+        for (index in 0 until rows.length()) {
+            val row = rows.optJSONObject(index) ?: continue
+            val title = row.optString("title").ifBlank { "窗口" }
+            add(RemoteWindow(title, row.optLong("window_id"), row.optInt("pid"), row.optBoolean("front")))
+        }
+    }
+}

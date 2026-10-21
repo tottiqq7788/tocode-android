@@ -52,8 +52,12 @@ class LinkDirectoryTest {
 
     @Test
     fun buttonsStayOnTheFixedList() {
-        assertEquals(11, remoteActions.size)
-        assertTrue(remoteActions.none { it.first == "shell" || it.first == "quit" })
+        assertEquals(4, remoteActions.size)
+        assertEquals(
+            setOf("status", "blackout", "blackout-dismiss", "lock"),
+            remoteActions.map { it.first }.toSet(),
+        )
+        assertTrue(remoteActions.none { it.first == "shell" || it.first == "quit" || it.first == "wheel-vertical" || it.first == "finder-follow" })
     }
 
     @Test
@@ -92,6 +96,21 @@ class LinkDirectoryTest {
         assertEquals(ChatBlock.User("写"), blocks[0])
         assertEquals(ChatBlock.Process(listOf("先读", "还差字数")), blocks[1])
         assertEquals(ChatBlock.Reply("写完了"), blocks[2])
+    }
+
+    @Test
+    fun replyPathsLinkTheLongestProjectEntry() {
+        val entries = listOf(
+            AppEntry("chapters", "chapters", "directory"),
+            AppEntry("chapters/007.md", "007.md", "file"),
+            AppEntry("notes", "notes", "directory"),
+        )
+        val text = "改好了 /Users/totti/Documents/hermes/liubei/Eonline/chapters/007.md ，目录在 chapters 里。"
+        val spans = pathSpans(text, entries)
+        assertEquals(listOf("chapters/007.md", "chapters"), spans.map { it.path })
+        assertEquals(listOf(false, true), spans.map { it.folder })
+        assertEquals("chapters/007.md", text.substring(spans[0].start, spans[0].end))
+        assertEquals("chapters", text.substring(spans[1].start, spans[1].end))
     }
 
     @Test

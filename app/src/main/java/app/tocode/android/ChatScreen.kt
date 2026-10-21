@@ -75,7 +75,12 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.LinkAnnotation
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextLinkStyles
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.withLink
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -145,7 +150,7 @@ fun SessionsTab(
         } else if (desk.installed != null) {
             item {
                 Panel(padding = PaddingValues(horizontal = 18.dp, vertical = 8.dp)) {
-                    ShortcutRow(Icons.Outlined.Tune, Tone.Info, "遥控这台 Mac", "黑屏、访达跟随、滚轮方向等") {
+                    ShortcutRow(Icons.Outlined.Tune, Tone.Info, "遥控这台 Mac", "黑屏、锁屏，以及切换桌面和窗口") {
                         controller.showTab(link.id, "buttons")
                     }
                 }
@@ -410,7 +415,15 @@ fun ChatScreen(controller: RemoteController, link: AppLink, desk: AppDesk, sessi
             when {
                 desk.turnsLoading && desk.turns.isEmpty() -> LoadingState("正在读取对话…", Modifier.align(Alignment.Center))
                 desk.turns.isEmpty() && !desk.sending -> ChatWelcome(onPick = { draft = it })
-                else -> MessageList(desk)
+                else -> MessageList(desk) { span ->
+                    if (span.folder) {
+                        controller.openDirectory(link.id, span.path)
+                        showFiles = true
+                    } else {
+                        val entry = desk.entries.firstOrNull { it.path == span.path } ?: return@MessageList
+                        controller.openPreview(link.id, entry)
+                    }
+                }
             }
         }
         Composer(
@@ -563,7 +576,8 @@ private fun ProjectDirectoryDrawer(
     Box(modifier = Modifier.fillMaxSize()) {
         Box(
             modifier = Modifier
-                .fillMaxSize()
+                .fillMaxWidth()
+                .fillMaxHeight(0.08f)
                 .background(Color.Black.copy(alpha = 0.32f))
                 .clickable(
                     interactionSource = remember { MutableInteractionSource() },
@@ -577,12 +591,7 @@ private fun ProjectDirectoryDrawer(
                 .fillMaxWidth()
                 .fillMaxHeight(0.92f)
                 .clip(RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp))
-                .background(Canvas)
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null,
-                    onClick = {},
-                ),
+                .background(Canvas),
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp, top = 10.dp, bottom = 4.dp),
@@ -603,13 +612,15 @@ private fun ProjectDirectoryDrawer(
             }
             }
             Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
-                FilesTab(
-                    controller,
-                    link,
-                    desk,
-                    online,
-                    onPickProject = {},
-                )
+            FilesTab(
+                controller,
+                link,
+                desk,
+                online,
+                path = desk.directoryPath,
+                onPath = { controller.openDirectory(link.id, it) },
+                onPickProject = {},
+            )
             }
         }
     }
@@ -658,29 +669,29 @@ private fun ChatWelcome(onPick: (String) -> Unit) {
 }
 
 @Composable
-private fun MessageList(desk: AppDesk) {
+private fun MessageList(desk: AppDesk, onOpenPath: (PathSpan) -> Unit) {
     val listState = rememberLazyListState()
+    val blocks = chatBlocks(desk.turns)
+    val tail = blocks.lastIndex + if (desk.sending) 1 else 0
     LaunchedEffect(desk.turns.size, desk.sending) {
-        listState.animateScrollToItem(0)
+        if (tail >= 0) listState.animateScrollToItem(tail)
     }
     LazyColumn(
         state = listState,
-        reverseLayout = true,
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(horizontal = 14.dp, vertical = 16.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        if (desk.sending) {
-            item(key = "typing") { AssistantBubble(null) }
-        }
-        val blocks = chatBlocks(desk.turns)
-        itemsIndexed(blocks.asReversed()) { index, block ->
-            val live = desk.sending && index == 0 && block is ChatBlock.Process
+        itemsIndexed(blocks, key = { index, _ -> index }) { index, block ->
+            val live = desk.sending && index == blocks.lastIndex && block is ChatBlock.Process
             when (block) {
                 is ChatBlock.User -> UserBubble(block.text)
-                is ChatBlock.Reply -> AssistantBubble(block.text)
+                is ChatBlock.Reply -> AssistantBubble(block.text, desk.entries, onOpenPath)
                 is ChatBlock.Process -> ProcessBlock(block.lines, live)
             }
+        }
+        if (desk.sending) {
+            item(key = "typing") { AssistantBubble(null, emptyList()) {} }
         }
     }
 }
@@ -783,8 +794,9 @@ private fun ProcessBlock(lines: List<String>, live: Boolean) {
 }
 
 @Composable
-private fun AssistantBubble(text: String?) {
+private fun AssistantBubble(text: String?, entries: List<AppEntry>, onOpenPath: (PathSpan) -> Unit) {
     val shape = RoundedCornerShape(topStart = 6.dp, topEnd = 20.dp, bottomStart = 20.dp, bottomEnd = 20.dp)
+    val linked = if (text == null) null else replyText(text, entries, onOpenPath)
     Box(
         modifier = Modifier
             .fillMaxWidth()
@@ -792,14 +804,44 @@ private fun AssistantBubble(text: String?) {
             .clip(shape)
             .background(Paper)
             .border(1.dp, Hairline, shape)
-            .then(if (text != null) copyable(text) else Modifier)
+            .then(if (text != null && linked == null) copyable(text) else Modifier)
             .padding(horizontal = 15.dp, vertical = if (text == null) 15.dp else 11.dp),
     ) {
         if (text == null) {
             TypingDots()
+        } else if (linked != null) {
+            Text(linked, style = MaterialTheme.typography.bodyLarge, color = Color.Unspecified)
         } else {
             Text(text, style = MaterialTheme.typography.bodyLarge, color = Ink)
         }
+    }
+}
+
+private fun replyText(text: String, entries: List<AppEntry>, onOpenPath: (PathSpan) -> Unit): AnnotatedString? {
+    val spans = pathSpans(text, entries)
+    if (spans.isEmpty()) return null
+    return buildAnnotatedString {
+        pushStyle(SpanStyle(color = Ink))
+        var cursor = 0
+        for (span in spans) {
+            append(text.substring(cursor, span.start))
+            withLink(
+                LinkAnnotation.Clickable(
+                    tag = span.path,
+                    styles = TextLinkStyles(
+                        SpanStyle(
+                            color = Sky,
+                            fontWeight = if (span.folder) FontWeight.Normal else FontWeight.Bold,
+                        )
+                    ),
+                    linkInteractionListener = { onOpenPath(span) },
+                )
+            ) {
+                append(text.substring(span.start, span.end))
+            }
+            cursor = span.end
+        }
+        append(text.substring(cursor))
     }
 }
 

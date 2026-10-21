@@ -34,6 +34,7 @@ class AppDesk {
     var turnsLoading by mutableStateOf(false)
     var openSession by mutableStateOf<AppSession?>(null)
     var preview by mutableStateOf<AppPreview?>(null)
+    var directoryPath by mutableStateOf("")
     var tab by mutableStateOf("sessions")
     var notice by mutableStateOf("")
     var creating by mutableStateOf(false)
@@ -58,6 +59,7 @@ private data class AppWait(
     val sessionId: String,
     val projectId: String,
     val path: String = "",
+    val offset: Int = 0,
 )
 
 class RemoteController(
@@ -77,6 +79,8 @@ class RemoteController(
     val lastAction = mutableStateMapOf<String, String>()
     val lastResult = mutableStateMapOf<String, String>()
     val lastOk = mutableStateMapOf<String, Boolean>()
+    val desktopLists = mutableStateMapOf<String, List<RemoteDisplay>>()
+    val desktopNotice = mutableStateMapOf<String, String>()
     private val desks = linkedMapOf<String, AppDesk>()
     private val appWait = linkedMapOf<String, AppWait>()
     private val sockets = linkedMapOf<String, WebSocket>()
@@ -365,33 +369,70 @@ class RemoteController(
         }
     }
 
-    fun send(action: String, title: String) {
+    fun send(action: String, title: String, target: JSONObject? = null) {
         val link = selected() ?: return
-        if (pending[link.id] != null) return
-        val socket = sockets[link.id]
-        lastAction[link.id] = title
-        if (socket == null || online[link.id] != true) {
-            lastResult[link.id] = "这台 Mac 还没连上"
-            lastOk[link.id] = false
+        deliver(link.id, action, title, target)
+    }
+
+    fun refreshDesktops(id: String) {
+        deliver(id, "desktops", "桌面与窗口", null, quiet = true)
+    }
+
+    fun switchDesktop(id: String, space: RemoteSpace) {
+        val target = JSONObject()
+            .put("display_id", space.displayId)
+            .put("space_id", space.spaceId)
+        deliver(id, "desktop-switch", space.title, target)
+    }
+
+    fun switchWindow(id: String, space: RemoteSpace, window: RemoteWindow) {
+        val target = JSONObject()
+            .put("display_id", space.displayId)
+            .put("space_id", space.spaceId)
+            .put("window_id", window.windowId)
+            .put("pid", window.pid)
+        deliver(id, "desktop-switch", window.title, target)
+    }
+
+    private fun deliver(id: String, action: String, title: String, target: JSONObject?, quiet: Boolean = false) {
+        if (directory.all().none { it.id == id }) return
+        if (pending[id] != null) return
+        val socket = sockets[id]
+        if (!quiet) lastAction[id] = title
+        if (socket == null || online[id] != true) {
+            if (quiet) {
+                desktopNotice[id] = "这台 Mac 还没连上"
+            } else {
+                lastResult[id] = "这台 Mac 还没连上"
+                lastOk[id] = false
+            }
             return
         }
         val requestId = UUID.randomUUID().toString()
-        pending[link.id] = requestId
-        pendingAction[link.id] = action
-        lastResult[link.id] = "正在执行…"
-        lastOk.remove(link.id)
+        pending[id] = requestId
+        pendingAction[id] = action
+        if (!quiet) {
+            lastResult[id] = "正在执行…"
+            lastOk.remove(id)
+        }
         val body = JSONObject()
             .put("op", "command")
-            .put("link_id", link.id)
+            .put("link_id", id)
             .put("request_id", requestId)
             .put("action", action)
+        if (target != null) body.put("target", target)
         socket.send(body.toString())
         main.postDelayed({
-            if (pending[link.id] == requestId) {
-                pending.remove(link.id)
-                pendingAction.remove(link.id)
-                lastResult[link.id] = "Mac 没有回应，请稍后再试"
-                lastOk[link.id] = false
+            if (pending[id] == requestId) {
+                val timedOut = pendingAction[id]
+                pending.remove(id)
+                pendingAction.remove(id)
+                if (timedOut == "desktops") {
+                    desktopNotice[id] = "Mac 没有回应，请稍后再试"
+                } else {
+                    lastResult[id] = "Mac 没有回应，请稍后再试"
+                    lastOk[id] = false
+                }
             }
         }, COMMAND_TIMEOUT_MS)
     }
@@ -428,6 +469,28 @@ class RemoteController(
         desk(id).preview = null
     }
 
+    fun loadMorePreview(id: String) {
+        val desk = desk(id)
+        val preview = desk.preview ?: return
+        val project = desk.openProject ?: return
+        if (preview.loading || preview.loadingMore || !preview.truncated) return
+        desk.preview = preview.copy(loadingMore = true)
+        val request = sendApp(
+            id,
+            "preview",
+            profile = desk.profile,
+            projectId = project.id,
+            path = preview.path,
+            offset = preview.next,
+            quiet = true,
+        )
+        if (request == null) desk.preview = preview.copy(loadingMore = false)
+    }
+
+    fun openDirectory(id: String, path: String) {
+        desk(id).directoryPath = path
+    }
+
     private val runPolls = mutableSetOf<String>()
 
     private fun watchRunning(linkId: String) {
@@ -461,6 +524,7 @@ class RemoteController(
         desk.treeNotice = ""
         desk.treeLoaded = false
         desk.preview = null
+        desk.directoryPath = ""
     }
 
     private fun loadTree(id: String, desk: AppDesk) {
@@ -491,6 +555,7 @@ class RemoteController(
         profile: String = "",
         projectId: String = "",
         path: String = "",
+        offset: Int = 0,
         quiet: Boolean = false,
     ): String? {
         if (directory.all().none { it.id == id }) return null
@@ -500,7 +565,7 @@ class RemoteController(
             return null
         }
         val requestId = UUID.randomUUID().toString()
-        appWait[requestId] = AppWait(id, kind, sessionId, projectId, path)
+        appWait[requestId] = AppWait(id, kind, sessionId, projectId, path, offset)
         val body = JSONObject()
             .put("op", "app")
             .put("request_id", requestId)
@@ -511,6 +576,7 @@ class RemoteController(
             .put("profile", profile)
             .put("project_id", projectId)
         if (path.isNotEmpty()) body.put("path", path)
+        if (offset > 0) body.put("offset", offset)
         socket.send(body.toString())
         val timeout = if (kind == "chat") CHAT_TIMEOUT_MS else APP_TIMEOUT_MS
         main.postDelayed({
@@ -578,11 +644,24 @@ class RemoteController(
             "result" -> {
                 val requestId = message.optString("request_id")
                 if (requestId.isNotBlank() && pending[linkId] != requestId) return
+                val action = pendingAction[linkId]
                 pending.remove(linkId)
                 pendingAction.remove(linkId)
                 val ok = message.optBoolean("ok")
-                lastResult[linkId] = message.optString("text").ifBlank { if (ok) "已完成" else "失败" }
-                lastOk[linkId] = ok
+                if (action != "desktops") {
+                    lastResult[linkId] = message.optString("text").ifBlank { if (ok) "已完成" else "失败" }
+                    lastOk[linkId] = ok
+                }
+                if (action == "desktops") {
+                    val body = message.optJSONObject("body")
+                    if (ok && body != null) {
+                        desktopLists[linkId] = parseRemoteDisplays(body)
+                        desktopNotice[linkId] = ""
+                    } else {
+                        desktopNotice[linkId] = message.optString("text").ifBlank { "无法读取桌面" }
+                    }
+                }
+                if (action == "desktop-switch") refreshDesktops(linkId)
             }
             "error" -> {
                 val requestId = message.optString("request_id")
@@ -628,7 +707,7 @@ class RemoteController(
             "preview" -> {
                 val current = desk.preview
                 if (current != null && current.path == wait.path) {
-                    desk.preview = current.copy(loading = false, notice = text)
+                    desk.preview = current.copy(loading = false, loadingMore = false, truncated = false, notice = text)
                 }
                 return
             }
@@ -818,13 +897,23 @@ class RemoteController(
             "preview" -> {
                 val current = desk.preview ?: return
                 if (current.path != wait.path) return
+                if (current.loading && wait.offset > 0) return
+                val chunk = body.optString("content")
+                val next = body.optInt("next", wait.offset)
+                if (wait.offset > 0 && (chunk.isEmpty() || next <= wait.offset)) {
+                    desk.preview = current.copy(loading = false, loadingMore = false, truncated = false)
+                    return
+                }
+                val combined = if (wait.offset > 0) current.content + chunk else chunk
                 desk.preview = current.copy(
                     loading = false,
+                    loadingMore = false,
                     name = body.optString("name").ifBlank { current.name },
                     format = body.optString("format").ifBlank { "text" },
-                    content = body.optString("content"),
+                    content = combined,
+                    next = next,
                     truncated = body.optBoolean("truncated"),
-                    notice = text,
+                    notice = if (wait.offset > 0) "" else text,
                 )
             }
             "tree" -> if (desk.openProject?.id == wait.projectId) {

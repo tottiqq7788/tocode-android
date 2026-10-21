@@ -1,17 +1,19 @@
 package app.tocode.android
 
-import android.webkit.WebResourceRequest
-import android.webkit.WebView
-import android.webkit.WebViewClient
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -22,15 +24,27 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.unit.sp
 
 @Composable
-fun FilePreviewScreen(preview: AppPreview, onBack: () -> Unit) {
+fun FilePreviewScreen(preview: AppPreview, onBack: () -> Unit, onLoadMore: () -> Unit) {
+    val scroll = rememberScrollState()
+    LaunchedEffect(preview.content, preview.truncated, preview.loading, preview.loadingMore) {
+        withFrameNanos { }
+        snapshotFlow { scroll.value to scroll.maxValue }.collect { (value, max) ->
+            if (preview.content.isEmpty() || preview.loading || preview.loadingMore || !preview.truncated) return@collect
+            if (max == 0 || value >= max - 480) onLoadMore()
+        }
+    }
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -44,7 +58,7 @@ fun FilePreviewScreen(preview: AppPreview, onBack: () -> Unit) {
             IconButton(onClick = onBack) {
                 Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "返回", tint = Ink)
             }
-            Column(modifier = Modifier.weight(1f)) {
+            Column(modifier = Modifier.weight(1f).padding(vertical = 10.dp)) {
                 Text(
                     preview.name,
                     style = MaterialTheme.typography.titleMedium,
@@ -53,19 +67,24 @@ fun FilePreviewScreen(preview: AppPreview, onBack: () -> Unit) {
                     overflow = TextOverflow.Ellipsis,
                 )
                 Text(
-                    when {
-                        preview.loading || (preview.content.isEmpty() && preview.notice.isNotBlank() && !preview.truncated) -> "预览"
-                        preview.format == "markdown" -> "Markdown"
-                        else -> "文本"
+                    preview.path.ifBlank {
+                        when {
+                            preview.loading -> "正在读取"
+                            preview.format == "markdown" -> "Markdown"
+                            else -> "文本"
+                        }
                     },
                     style = MaterialTheme.typography.labelMedium,
                     color = Slate,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
         }
+        Box(Modifier.fillMaxWidth().height(1.dp).background(Hairline))
         when {
-            preview.loading -> LoadingState("正在读取…", Modifier.padding(top = 48.dp))
-            preview.content.isEmpty() && preview.notice.isNotBlank() && !preview.truncated -> {
+            preview.loading && preview.content.isEmpty() -> LoadingState("正在读取…", Modifier.padding(top = 48.dp))
+            preview.content.isEmpty() && preview.notice.isNotBlank() -> {
                 EmptyState(
                     icon = Icons.Outlined.ErrorOutline,
                     title = "打不开",
@@ -80,70 +99,106 @@ fun FilePreviewScreen(preview: AppPreview, onBack: () -> Unit) {
                     subtitle = "这个文件里没有内容。",
                 )
             }
-            preview.format == "markdown" -> MarkdownView(preview.content, Modifier.weight(1f).fillMaxWidth())
             else -> SelectionContainer(Modifier.weight(1f).fillMaxWidth()) {
-                Text(
-                    preview.content,
+                Column(
                     modifier = Modifier
-                        .fillMaxSize()
-                        .verticalScroll(rememberScrollState())
-                        .padding(horizontal = 18.dp, vertical = 16.dp)
+                        .fillMaxWidth()
+                        .verticalScroll(scroll)
+                        .padding(horizontal = 20.dp, vertical = 18.dp)
                         .navigationBarsPadding(),
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontFamily = FontFamily.Monospace,
-                    color = Ink,
-                )
+                ) {
+                    if (preview.format == "markdown") MarkdownBody(preview.content) else PlainBody(preview.content)
+                    if (preview.loadingMore) {
+                        Text(
+                            "继续读取…",
+                            modifier = Modifier.padding(top = 18.dp),
+                            style = MaterialTheme.typography.labelLarge,
+                            color = Slate,
+                        )
+                    }
+                }
             }
-        }
-        if (preview.truncated) {
-            Banner(preview.notice.ifBlank { "只显示了前面一段" }, Tone.Info, Modifier.padding(16.dp).navigationBarsPadding())
         }
     }
 }
 
 @Composable
-private fun MarkdownView(markdown: String, modifier: Modifier) {
-    val html = markdownDocument(markdown)
-    AndroidView(
-        modifier = modifier.navigationBarsPadding(),
-        factory = { context ->
-            WebView(context).apply {
-                settings.javaScriptEnabled = false
-                settings.allowFileAccess = false
-                settings.allowContentAccess = false
-                settings.blockNetworkLoads = true
-                setBackgroundColor(android.graphics.Color.TRANSPARENT)
-                webViewClient = object : WebViewClient() {
-                    override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean = true
-                }
-            }
-        },
-        update = { view ->
-            view.loadDataWithBaseURL(null, html, "text/html", "utf-8", null)
-        },
+private fun PlainBody(content: String) {
+    Text(
+        content,
+        color = Ink,
+        fontFamily = FontFamily.Monospace,
+        fontSize = 15.sp,
+        lineHeight = 24.sp,
     )
 }
 
-internal fun markdownDocument(markdown: String): String {
-    val body = renderMarkdown(markdown)
-    return """
-        <!DOCTYPE html>
-        <html><head>
-        <meta name="viewport" content="width=device-width, initial-scale=1">
-        <style>
-        body { font: 16px/1.6 -apple-system, sans-serif; color: #1c1c1e; margin: 0; padding: 16px 18px 32px; }
-        pre { background: #f4f4f5; padding: 12px; border-radius: 12px; overflow-x: auto; }
-        code { font-family: ui-monospace, Menlo, monospace; background: #f4f4f5; padding: 1px 4px; border-radius: 4px; }
-        pre code { background: none; padding: 0; }
-        blockquote { margin: 0 0 12px; padding-left: 12px; border-left: 3px solid #d0d0d4; color: #555; }
-        a { color: #1f7a4d; }
-        </style></head><body>$body</body></html>
-    """.trimIndent()
+@Composable
+private fun MarkdownBody(content: String) {
+    Column(verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(12.dp)) {
+        markdownPieces(content).forEach { piece ->
+            when (piece) {
+                is PreviewPiece.Heading -> Text(
+                    piece.text,
+                    color = Ink,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = if (piece.level <= 2) 22.sp else 18.sp,
+                    lineHeight = if (piece.level <= 2) 30.sp else 26.sp,
+                )
+                is PreviewPiece.Paragraph -> Text(
+                    piece.text,
+                    color = InkSoft,
+                    fontSize = 17.sp,
+                    lineHeight = 28.sp,
+                )
+                is PreviewPiece.Code -> Text(
+                    piece.text,
+                    color = Ink,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 14.sp,
+                    lineHeight = 22.sp,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(Fog, RoundedCornerShape(12.dp))
+                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                )
+                is PreviewPiece.Quote -> Row(modifier = Modifier.fillMaxWidth()) {
+                    Box(
+                        modifier = Modifier
+                            .width(3.dp)
+                            .background(Sky, RoundedCornerShape(2.dp)),
+                    )
+                    Text(
+                        piece.text,
+                        color = Slate,
+                        fontSize = 16.sp,
+                        lineHeight = 26.sp,
+                        modifier = Modifier.padding(start = 12.dp),
+                    )
+                }
+                is PreviewPiece.Item -> Text(
+                    piece.text,
+                    color = InkSoft,
+                    fontSize = 17.sp,
+                    lineHeight = 28.sp,
+                    modifier = Modifier.padding(start = 8.dp),
+                )
+            }
+        }
+    }
 }
 
-private fun renderMarkdown(source: String): String {
+internal sealed class PreviewPiece {
+    data class Heading(val level: Int, val text: String) : PreviewPiece()
+    data class Paragraph(val text: String) : PreviewPiece()
+    data class Code(val text: String) : PreviewPiece()
+    data class Quote(val text: String) : PreviewPiece()
+    data class Item(val text: String) : PreviewPiece()
+}
+
+internal fun markdownPieces(source: String): List<PreviewPiece> {
     val lines = source.replace("\r\n", "\n").replace('\r', '\n').split('\n')
-    val html = StringBuilder()
+    val pieces = mutableListOf<PreviewPiece>()
     var index = 0
     while (index < lines.size) {
         val line = lines[index]
@@ -156,7 +211,7 @@ private fun renderMarkdown(source: String): String {
                 index += 1
             }
             if (index < lines.size) index += 1
-            html.append("<pre><code>").append(escapeHtml(code.toString())).append("</code></pre>")
+            pieces.add(PreviewPiece.Code(code.toString()))
             continue
         }
         if (line.isBlank()) {
@@ -165,40 +220,41 @@ private fun renderMarkdown(source: String): String {
         }
         val heading = Regex("^(#{1,6})\\s+(.*)$").find(line)
         if (heading != null) {
-            val level = heading.groupValues[1].length
-            html.append("<h").append(level).append(">").append(inlineMarkdown(heading.groupValues[2])).append("</h").append(level).append(">")
+            pieces.add(PreviewPiece.Heading(heading.groupValues[1].length, inlinePlain(heading.groupValues[2])))
             index += 1
             continue
         }
         if (line.startsWith(">")) {
             val quote = StringBuilder()
             while (index < lines.size && lines[index].startsWith(">")) {
-                if (quote.isNotEmpty()) quote.append("<br>")
-                quote.append(inlineMarkdown(lines[index].removePrefix(">").trim()))
+                if (quote.isNotEmpty()) quote.append('\n')
+                quote.append(inlinePlain(lines[index].removePrefix(">").trim()))
                 index += 1
             }
-            html.append("<blockquote>").append(quote).append("</blockquote>")
+            pieces.add(PreviewPiece.Quote(quote.toString()))
             continue
         }
         if (isListItem(line)) {
-            val ordered = line.trimStart().first().isDigit()
-            html.append(if (ordered) "<ol>" else "<ul>")
             while (index < lines.size && isListItem(lines[index])) {
-                html.append("<li>").append(inlineMarkdown(listText(lines[index]))).append("</li>")
+                val marker = if (lines[index].trimStart().first().isDigit()) {
+                    lines[index].trimStart().substringBefore(' ')
+                } else {
+                    "•"
+                }
+                pieces.add(PreviewPiece.Item("$marker ${inlinePlain(listText(lines[index]))}"))
                 index += 1
             }
-            html.append(if (ordered) "</ol>" else "</ul>")
             continue
         }
         val paragraph = StringBuilder()
         while (index < lines.size && lines[index].isNotBlank() && !lines[index].startsWith("```") && !lines[index].startsWith(">") && !isListItem(lines[index]) && !lines[index].matches(Regex("^#{1,6}\\s+.*$"))) {
-            if (paragraph.isNotEmpty()) paragraph.append("<br>")
-            paragraph.append(inlineMarkdown(lines[index]))
+            if (paragraph.isNotEmpty()) paragraph.append('\n')
+            paragraph.append(inlinePlain(lines[index]))
             index += 1
         }
-        html.append("<p>").append(paragraph).append("</p>")
+        pieces.add(PreviewPiece.Paragraph(paragraph.toString()))
     }
-    return html.toString()
+    return pieces
 }
 
 private fun isListItem(line: String): Boolean {
@@ -214,27 +270,7 @@ private fun listText(line: String): String {
     }
 }
 
-private fun inlineMarkdown(raw: String): String {
-    val html = StringBuilder()
-    var index = 0
-    val code = Regex("`([^`]+)`")
-    for (match in code.findAll(raw)) {
-        html.append(styleMarkdown(escapeHtml(raw.substring(index, match.range.first))))
-        html.append("<code>").append(escapeHtml(match.groupValues[1])).append("</code>")
-        index = match.range.last + 1
-    }
-    html.append(styleMarkdown(escapeHtml(raw.substring(index))))
-    return html.toString()
-}
-
-private fun styleMarkdown(escaped: String): String {
-    var text = Regex("\\*\\*([^*]+)\\*\\*").replace(escaped) { "<strong>${it.groupValues[1]}</strong>" }
-    text = Regex("(?<!\\*)\\*([^*]+)\\*(?!\\*)").replace(text) { "<em>${it.groupValues[1]}</em>" }
-    text = Regex("\\[([^\\]]+)]\\((https?://[^)\\s]+)\\)").replace(text) {
-        "<a href=\"${it.groupValues[2]}\">${it.groupValues[1]}</a>"
-    }
-    return text
-}
-
-private fun escapeHtml(text: String): String =
-    text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;")
+private fun inlinePlain(raw: String): String =
+    raw.replace(Regex("`([^`]+)`"), "$1")
+        .replace(Regex("\\*\\*([^*]+)\\*\\*"), "$1")
+        .replace(Regex("(?<!\\*)\\*([^*]+)\\*(?!\\*)"), "$1")

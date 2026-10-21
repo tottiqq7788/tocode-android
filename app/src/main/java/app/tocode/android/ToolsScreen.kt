@@ -1,6 +1,7 @@
 package app.tocode.android
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.border
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -29,29 +30,21 @@ import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.Code
 import androidx.compose.material.icons.outlined.DataObject
 import androidx.compose.material.icons.outlined.DarkMode
-import androidx.compose.material.icons.outlined.DriveFileMove
+import androidx.compose.material.icons.outlined.LightMode
+import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.FolderOff
 import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material.icons.outlined.InsertDriveFile
-import androidx.compose.material.icons.outlined.Keyboard
 import androidx.compose.material.icons.outlined.MonitorHeart
-import androidx.compose.material.icons.outlined.Mouse
-import androidx.compose.material.icons.outlined.PowerSettingsNew
-import androidx.compose.material.icons.outlined.SwapHoriz
-import androidx.compose.material.icons.outlined.SwapVert
 import androidx.compose.material.icons.outlined.TouchApp
-import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.setValue
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -62,10 +55,17 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 
 @Composable
-fun FilesTab(controller: RemoteController, link: AppLink, desk: AppDesk, online: Boolean?, onPickProject: () -> Unit) {
+fun FilesTab(
+    controller: RemoteController,
+    link: AppLink,
+    desk: AppDesk,
+    online: Boolean?,
+    path: String,
+    onPath: (String) -> Unit,
+    onPickProject: () -> Unit,
+) {
     val project = desk.openProject
-    var path by rememberSaveable(link.id, project?.id) { mutableStateOf("") }
-    BackHandler(enabled = path.isNotEmpty()) { path = path.substringBeforeLast('/', "") }
+    BackHandler(enabled = path.isNotEmpty()) { onPath(path.substringBeforeLast('/', "")) }
     val children = childrenOf(desk.entries, path)
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -111,7 +111,7 @@ fun FilesTab(controller: RemoteController, link: AppLink, desk: AppDesk, online:
             }
             return@LazyColumn
         }
-        item { Breadcrumbs(path, onPick = { path = it }) }
+        item { Breadcrumbs(path, onPick = onPath) }
         if (desk.treeNotice.isNotBlank()) {
             item { Banner(desk.treeNotice, Tone.Info) }
         }
@@ -141,7 +141,7 @@ fun FilesTab(controller: RemoteController, link: AppLink, desk: AppDesk, online:
                             entry = entry,
                             count = if (entry.isFolder()) desk.entries.count { it.parent() == entry.path } else 0,
                             onOpen = {
-                                if (entry.isFolder()) path = entry.path else controller.openPreview(link.id, entry)
+                                if (entry.isFolder()) onPath(entry.path) else controller.openPreview(link.id, entry)
                             },
                         )
                     }
@@ -238,17 +238,10 @@ private fun fileTone(ext: String): Tone = when (ext) {
 private data class ActionLook(val icon: ImageVector, val hint: String)
 
 private val actionLooks = mapOf(
-    "status" to ActionLook(Icons.Outlined.MonitorHeart, "查看所有开关"),
-    "blackout" to ActionLook(Icons.Outlined.DarkMode, "立即遮住屏幕"),
-    "login" to ActionLook(Icons.Outlined.PowerSettingsNew, "登录时自动启动"),
-    "finder-follow" to ActionLook(Icons.Outlined.TouchApp, "跟随访达选中"),
-    "codex-follow" to ActionLook(Icons.Outlined.Code, "跟随 Codex 项目"),
-    "hidden" to ActionLook(Icons.Outlined.VisibilityOff, "显示或隐藏"),
-    "finder-move" to ActionLook(Icons.Outlined.DriveFileMove, "剪切后移动"),
-    "finder-cmdq" to ActionLook(Icons.Outlined.Keyboard, "访达里 Cmd-Q"),
-    "double-cmdq" to ActionLook(Icons.Outlined.Keyboard, "防止误退出"),
-    "wheel-vertical" to ActionLook(Icons.Outlined.SwapVert, "翻转上下方向"),
-    "wheel-horizontal" to ActionLook(Icons.Outlined.SwapHoriz, "翻转左右方向"),
+    "status" to ActionLook(Icons.Outlined.MonitorHeart, "查看这台 Mac"),
+    "blackout" to ActionLook(Icons.Outlined.DarkMode, "立刻遮住屏幕"),
+    "blackout-dismiss" to ActionLook(Icons.Outlined.LightMode, "揭掉已经遮住的屏幕"),
+    "lock" to ActionLook(Icons.Outlined.Lock, "离开时锁上"),
 )
 
 private val groupTones = listOf(Tone.Info, Tone.Good, Tone.Warn)
@@ -258,6 +251,10 @@ fun ControlTab(controller: RemoteController, link: AppLink, online: Boolean?) {
     val titles = remoteActions.toMap()
     val busyAction = controller.pendingAction[link.id]
     val enabled = online == true && busyAction == null
+    val displays = controller.desktopLists[link.id].orEmpty()
+    LaunchedEffect(link.id, online) {
+        if (online == true) controller.refreshDesktops(link.id)
+    }
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 24.dp),
@@ -283,7 +280,7 @@ fun ControlTab(controller: RemoteController, link: AppLink, online: Boolean?) {
                         horizontalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
                         pair.forEach { action ->
-                            val look = actionLooks[action] ?: ActionLook(Icons.Outlined.Mouse, "")
+                            val look = actionLooks[action] ?: ActionLook(Icons.Outlined.TouchApp, "")
                             ActionTile(
                                 title = titles[action] ?: action,
                                 look = look,
@@ -296,6 +293,73 @@ fun ControlTab(controller: RemoteController, link: AppLink, online: Boolean?) {
                         }
                         if (pair.size == 1) Spacer(Modifier.weight(1f))
                     }
+                }
+            }
+        }
+        item { SectionTitle("桌面与窗口", modifier = Modifier.padding(top = 6.dp)) }
+        when {
+            online != true -> Unit
+            displays.isNotEmpty() -> {
+                val showDisplay = displays.size > 1
+                displays.forEach { display ->
+                    if (showDisplay && display.title.isNotBlank()) {
+                        item { Text(display.title, style = MaterialTheme.typography.labelLarge, color = Slate) }
+                    }
+                    display.spaces.forEach { space ->
+                        item {
+                            DesktopSpaceCard(space, enabled) { window ->
+                                if (window == null) controller.switchDesktop(link.id, space)
+                                else controller.switchWindow(link.id, space, window)
+                            }
+                        }
+                    }
+                }
+            }
+            controller.desktopNotice[link.id].orEmpty().isBlank() -> item { LoadingState("正在读取桌面…") }
+            else -> item { Banner(controller.desktopNotice[link.id].orEmpty(), Tone.Bad) }
+        }
+    }
+}
+
+@Composable
+private fun DesktopSpaceCard(space: RemoteSpace, enabled: Boolean, onOpen: (RemoteWindow?) -> Unit) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(18.dp))
+            .background(Paper)
+            .border(1.dp, Hairline, RoundedCornerShape(18.dp)),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(enabled = enabled) { onOpen(null) }
+                .padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(space.title, style = MaterialTheme.typography.titleSmall, color = Ink, modifier = Modifier.weight(1f))
+            if (space.current) Text("当前空间", style = MaterialTheme.typography.labelMedium, color = Pine)
+        }
+        space.windows.forEach { window ->
+            Box(Modifier.fillMaxWidth().padding(start = 16.dp).height(1.dp).background(Hairline))
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(enabled = enabled) { onOpen(window) }
+                    .padding(start = 28.dp, end = 16.dp, top = 12.dp, bottom = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    window.title,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = InkSoft,
+                    modifier = Modifier.weight(1f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                if (window.front) {
+                    Spacer(Modifier.width(8.dp))
+                    Text("当前", style = MaterialTheme.typography.labelMedium, color = Sky)
                 }
             }
         }

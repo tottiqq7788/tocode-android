@@ -92,7 +92,9 @@ fun RemoteScreen(controller: RemoteController) {
         }
         if (preview != null) {
             BackHandler { controller.closePreview(link.id) }
-            FilePreviewScreen(preview) { controller.closePreview(link.id) }
+            FilePreviewScreen(preview, onBack = { controller.closePreview(link.id) }) {
+                controller.loadMorePreview(link.id)
+            }
         }
     }
 }
@@ -249,7 +251,15 @@ private fun DeviceScreen(controller: RemoteController, link: AppLink, desk: AppD
     ) { padding ->
         Box(modifier = Modifier.fillMaxSize().padding(padding)) {
             when (desk.tab) {
-                "files" -> FilesTab(controller, link, desk, online, onPickProject = { showProjects = true })
+                "files" -> FilesTab(
+                    controller,
+                    link,
+                    desk,
+                    online,
+                    path = desk.directoryPath,
+                    onPath = { controller.openDirectory(link.id, it) },
+                    onPickProject = { showProjects = true },
+                )
                 "buttons" -> ControlTab(controller, link, online)
                 else -> SessionsTab(
                     controller,
