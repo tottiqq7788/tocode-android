@@ -12,6 +12,13 @@ const val EXTRA_PROJECT_ID = "session_project_id"
 const val EXTRA_PROJECT_NAME = "session_project_name"
 const val EXTRA_SESSION_ID = "session_id"
 const val EXTRA_SESSION_TITLE = "session_title"
+const val EXTRA_TAB = "open_tab"
+const val TAB_NEW_SESSION = "sessions_new"
+const val RECENT_REPLIES_FILE = "recent-replies.json"
+const val RECENT_REPLY_LIMIT = 3
+const val RECENT_REPLY_TTL_MS = 24L * 60 * 60 * 1000
+private const val MEDIUM_ROWS = 2
+private const val LARGE_ROWS = 5
 
 @Serializable
 data class RunningSession(
@@ -47,17 +54,34 @@ data class SessionLaunchState(
     val projectId: String?,
 )
 
-data class SmallSessionView(val title: String?, val more: Int, val open: SessionOpen?)
+@Serializable
+data class RecentReply(
+    val linkId: String,
+    val macName: String,
+    val profile: String,
+    val projectId: String,
+    val projectName: String,
+    val sessionId: String,
+    val title: String,
+    val finishedAt: Long,
+)
 
-data class MediumSessionRow(val title: String, val detail: String, val open: SessionOpen)
+data class WidgetRunRow(val title: String, val place: String, val startedAt: Long, val open: SessionOpen)
 
-data class MediumSessionView(val rows: List<MediumSessionRow>, val more: Int)
+data class WidgetReplyRow(val title: String, val place: String, val finishedAt: Long, val open: SessionOpen)
 
-data class LargeSessionRow(val title: String, val open: SessionOpen)
+data class SmallSessionView(val running: Int, val run: WidgetRunRow?, val reply: WidgetReplyRow?)
 
-data class LargeSessionGroup(val label: String, val rows: List<LargeSessionRow>)
+data class MediumSessionView(val running: Int, val runs: List<WidgetRunRow>, val replies: List<WidgetReplyRow>)
 
-data class LargeSessionView(val groups: List<LargeSessionGroup>, val more: Int)
+data class LargeSessionGroup(val label: String, val rows: List<WidgetRunRow>)
+
+data class LargeSessionView(
+    val running: Int,
+    val groups: List<LargeSessionGroup>,
+    val replies: List<WidgetReplyRow>,
+    val more: Int,
+)
 
 fun noteProject(
     current: List<RunningSession>,
@@ -165,6 +189,8 @@ fun sessionOpenFrom(
     )
 }
 
+fun widgetTab(raw: String?): String? = raw?.takeIf { it in setOf(TAB_NEW_SESSION, "sessions", "files", "buttons") }
+
 fun sessionLaunchStep(open: SessionOpen, state: SessionLaunchState): SessionLaunchStep {
     if (!state.linkExists || state.online == false) return SessionLaunchStep.Offline
     if (state.online != true) return SessionLaunchStep.Wait
@@ -173,39 +199,85 @@ fun sessionLaunchStep(open: SessionOpen, state: SessionLaunchState): SessionLaun
     return SessionLaunchStep.OpenSession
 }
 
-fun smallSessionView(sessions: List<RunningSession>): SmallSessionView {
+fun smallSessionView(sessions: List<RunningSession>, replies: List<RecentReply> = emptyList(), now: Long = 0): SmallSessionView {
     val ordered = newestFirst(sessions)
-    val first = ordered.firstOrNull() ?: return SmallSessionView(null, 0, null)
-    return SmallSessionView(first.title, (ordered.size - 1).coerceAtLeast(0), first.toOpen())
+    val first = ordered.firstOrNull()
+    val reply = if (first == null) freshReplies(replies, now).firstOrNull()?.toRow() else null
+    return SmallSessionView(ordered.size, first?.toRow(), reply)
 }
 
-fun mediumSessionView(sessions: List<RunningSession>): MediumSessionView {
+fun mediumSessionView(sessions: List<RunningSession>, replies: List<RecentReply> = emptyList(), now: Long = 0): MediumSessionView {
     val ordered = newestFirst(sessions)
-    val shown = ordered.take(3)
-    val distinct = shown.map { it.macName to it.projectName }.distinct().size > 1
-    return MediumSessionView(
-        rows = shown.map { session ->
-            MediumSessionRow(
-                title = session.title,
-                detail = if (distinct) placeLabel(session.macName, session.projectName) else "",
-                open = session.toOpen(),
-            )
-        },
+    val runs = ordered.take(MEDIUM_ROWS).map { it.toRow() }
+    val fill = freshReplies(replies, now).take(MEDIUM_ROWS - runs.size).map { it.toRow() }
+    return MediumSessionView(ordered.size, runs, fill)
+}
+
+fun largeSessionView(sessions: List<RunningSession>, replies: List<RecentReply> = emptyList(), now: Long = 0): LargeSessionView {
+    val ordered = newestFirst(sessions)
+    val shown = ordered.take(LARGE_ROWS)
+    val groups = shown.groupBy { it.linkId to it.projectId }.values.map { rows ->
+        LargeSessionGroup(
+            label = placeLabel(rows.first().macName, rows.first().projectName),
+            rows = rows.map { it.toRow() },
+        )
+    }
+    return LargeSessionView(
+        running = ordered.size,
+        groups = groups,
+        replies = freshReplies(replies, now).map { it.toRow() },
         more = (ordered.size - shown.size).coerceAtLeast(0),
     )
 }
 
-fun largeSessionView(sessions: List<RunningSession>): LargeSessionView {
-    val ordered = newestFirst(sessions)
-    val shown = ordered.take(8)
-    val groups = shown.groupBy { it.linkId to it.projectId }.values.map { rows ->
-        LargeSessionGroup(
-            label = placeLabel(rows.first().macName, rows.first().projectName),
-            rows = rows.map { LargeSessionRow(it.title, it.toOpen()) },
-        )
-    }
-    return LargeSessionView(groups, (ordered.size - shown.size).coerceAtLeast(0))
+fun noteReplied(current: List<RecentReply>, notified: List<RunningSession>, now: Long): List<RecentReply> {
+    if (notified.isEmpty()) return freshReplies(current, now)
+    val added = notified.map { RecentReply(it.linkId, it.macName, it.profile, it.projectId, it.projectName, it.sessionId, it.title, now) }
+    val keys = added.map { it.linkId to it.sessionId }.toSet()
+    return freshReplies(added + current.filterNot { (it.linkId to it.sessionId) in keys }, now)
 }
+
+fun dropReplied(current: List<RecentReply>, linkId: String, sessionId: String): List<RecentReply> =
+    current.filterNot { it.linkId == linkId && it.sessionId == sessionId }
+
+fun dropRunningReplies(current: List<RecentReply>, running: List<RunningSession>): List<RecentReply> {
+    val keys = running.map { it.linkId to it.sessionId }.toSet()
+    return current.filterNot { (it.linkId to it.sessionId) in keys }
+}
+
+fun freshReplies(current: List<RecentReply>, now: Long): List<RecentReply> =
+    current
+        .filter { now - it.finishedAt in 0..RECENT_REPLY_TTL_MS }
+        .sortedByDescending { it.finishedAt }
+        .take(RECENT_REPLY_LIMIT)
+
+fun repliedAgo(now: Long, finishedAt: Long): String {
+    val minutes = ((now - finishedAt).coerceAtLeast(0) / 60_000L)
+    return when {
+        minutes < 1 -> "刚刚"
+        minutes < 60 -> "$minutes 分钟前"
+        else -> "${minutes / 60} 小时前"
+    }
+}
+
+class RecentReplyStore(private val file: File) {
+    private val json = Json { ignoreUnknownKeys = true }
+
+    fun load(): List<RecentReply> {
+        if (!file.exists()) return emptyList()
+        return runCatching { json.decodeFromString<List<RecentReply>>(file.readText()) }.getOrDefault(emptyList())
+    }
+
+    fun save(replies: List<RecentReply>) {
+        file.parentFile?.mkdirs()
+        file.writeText(json.encodeToString(replies))
+    }
+}
+
+private fun RunningSession.toRow(): WidgetRunRow = WidgetRunRow(title, projectName, startedAt, toOpen())
+
+private fun RecentReply.toRow(): WidgetReplyRow =
+    WidgetReplyRow(title, projectName, finishedAt, SessionOpen(linkId, profile, projectId, projectName, sessionId, title))
 
 class RunningSessionStore(private val file: File) {
     private val json = Json { ignoreUnknownKeys = true }

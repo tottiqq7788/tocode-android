@@ -85,21 +85,65 @@ class RunningSessionTest {
             session("mac-b", "p2", "other", 2, macName = "Mac B", projectName = "乙", title = "另一台"),
         )
         val small = smallSessionView(sessions)
-        assertEquals("新", small.title)
-        assertEquals(2, small.more)
-        assertEquals("new", small.open?.sessionId)
+        assertEquals("新", small.run?.title)
+        assertEquals(3, small.running)
+        assertEquals("new", small.run?.open?.sessionId)
+        assertNull(small.reply)
 
         val medium = mediumSessionView(sessions)
-        assertEquals(listOf("新", "另一台", "旧"), medium.rows.map { it.title })
-        assertEquals("Mac A · 甲", medium.rows.first().detail)
-        assertEquals(0, medium.more)
-        assertEquals("", mediumSessionView(sessions.take(2).filter { it.sessionId != "other" }).rows.first().detail)
+        assertEquals(listOf("新", "另一台"), medium.runs.map { it.title })
+        assertEquals("甲", medium.runs.first().place)
+        assertTrue(medium.replies.isEmpty())
 
         val extra = (4..10).map { session("mac-a", "p1", "s$it", it.toLong(), macName = "Mac A", projectName = "甲", title = "第$it") }
         val large = largeSessionView(sessions + extra)
-        assertEquals(8, large.groups.sumOf { it.rows.size })
-        assertEquals(2, large.more)
+        assertEquals(5, large.groups.sumOf { it.rows.size })
+        assertEquals(5, large.more)
         assertEquals("Mac A · 甲", large.groups.first().label)
+    }
+
+    @Test
+    fun recentRepliesKeepThreeForADayAndLeaveWhenOpenedOrRunning() {
+        val hour = 60 * 60 * 1000L
+        var replies = emptyList<RecentReply>()
+        (1..4).forEach { index ->
+            replies = noteReplied(replies, listOf(session("mac", "p1", "s$index", 1, title = "第$index")), index * hour)
+        }
+        assertEquals(listOf("s4", "s3", "s2"), replies.map { it.sessionId })
+        assertTrue(freshReplies(replies, 4 * hour + RECENT_REPLY_TTL_MS + 1).none { it.sessionId == "s2" })
+
+        replies = noteReplied(replies, listOf(session("mac", "p1", "s3", 1, title = "第3")), 5 * hour)
+        assertEquals(listOf("s3", "s4", "s2"), replies.map { it.sessionId })
+
+        assertEquals(listOf("s4", "s2"), dropReplied(replies, "mac", "s3").map { it.sessionId })
+        assertEquals(listOf("s3", "s2"), dropRunningReplies(replies, listOf(session("mac", "p1", "s4", 9))).map { it.sessionId })
+    }
+
+    @Test
+    fun widgetsFillWithRecentRepliesAndHideProfileAndPath() {
+        val now = 10 * 60 * 1000L
+        val reply = RecentReply("mac", "Mac A", "secret-profile", "p1", "甲", "done", "写完了", now - 3 * 60 * 1000L)
+        val running = listOf(session("mac", "p1", "run", 1, projectName = "甲", title = "进行中"))
+
+        val idle = smallSessionView(emptyList(), listOf(reply), now)
+        assertNull(idle.run)
+        assertEquals("done", idle.reply?.open?.sessionId)
+        assertNull(smallSessionView(running, listOf(reply), now).reply)
+
+        val medium = mediumSessionView(running, listOf(reply), now)
+        assertEquals(listOf("进行中"), medium.runs.map { it.title })
+        assertEquals(listOf("写完了"), medium.replies.map { it.title })
+
+        val large = largeSessionView(running, listOf(reply), now)
+        assertEquals(listOf("写完了"), large.replies.map { it.title })
+        val shown = (medium.runs.flatMap { listOf(it.title, it.place) } + large.replies.flatMap { listOf(it.title, it.place) } +
+            large.groups.map { it.label }).joinToString("|")
+        assertFalse(shown.contains("secret-profile"))
+        assertFalse(shown.contains("/"))
+        assertEquals("3 分钟前", repliedAgo(now, reply.finishedAt))
+        assertEquals("刚刚", repliedAgo(now, now))
+        assertEquals(TAB_NEW_SESSION, widgetTab(TAB_NEW_SESSION))
+        assertNull(widgetTab("../evil"))
     }
 
     @Test

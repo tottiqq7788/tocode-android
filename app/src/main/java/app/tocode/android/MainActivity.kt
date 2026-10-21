@@ -31,6 +31,7 @@ class MainActivity : ComponentActivity() {
                 client = RelayClient(),
                 runningStore = RunningSessionStore(File(filesDir, RUNNING_SESSIONS_FILE)),
                 bookmarks = PreviewBookmarkStore(File(filesDir, "preview-bookmarks.json")),
+                replyStore = RecentReplyStore(File(filesDir, RECENT_REPLIES_FILE)),
             ).also { shared = it }
         }
         controller.onRunningChanged = { _, finished ->
@@ -58,6 +59,12 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun openIntent(intent: Intent?) {
+        val tab = widgetTab(intent?.getStringExtra(EXTRA_TAB))
+        if (tab != null) {
+            intent?.removeExtra(EXTRA_TAB)
+            controller?.openTabFrom(tab)
+            return
+        }
         val open = sessionOpenFrom(
             intent?.getStringExtra(EXTRA_LINK_ID),
             intent?.getStringExtra(EXTRA_PROFILE),

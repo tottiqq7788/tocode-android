@@ -88,6 +88,7 @@ class RemoteController(
     private val client: RelayClient,
     private val runningStore: RunningSessionStore,
     private val bookmarks: PreviewBookmarkStore,
+    private val replyStore: RecentReplyStore,
     var onRunningChanged: (List<RunningSession>, List<RunningSession>) -> Unit = { _, _ -> },
 ) {
     var scanning by mutableStateOf(false)
@@ -120,7 +121,9 @@ class RemoteController(
     private val worker = Executors.newSingleThreadExecutor()
     private val main = Handler(Looper.getMainLooper())
     private var runningSessions = runningStore.load()
+    private var recentReplies = replyStore.load()
     private var pendingOpen: SessionOpen? = null
+    private var pendingDraft: String? = null
     private var openProfileSent: SessionOpen? = null
     private var openProjectSent: SessionOpen? = null
 
@@ -183,6 +186,7 @@ class RemoteController(
             desk.notice = "这台电脑没有 Hermes"
             return
         }
+        if (session.id.isNotEmpty()) forgetReply(id, session.id)
         val saved = desk.transcripts[session.id]
         desk.openSession = session
         desk.turns = saved?.turns ?: emptyList()
@@ -1505,7 +1509,23 @@ class RemoteController(
         advanceOpen()
     }
 
+    fun openTabFrom(tab: String) {
+        val link = selected() ?: return
+        val desk = desk(link.id)
+        pendingOpen = null
+        desk.preview = null
+        if (tab == TAB_NEW_SESSION) {
+            showTab(link.id, "sessions")
+            pendingDraft = link.id
+            advanceOpen()
+        } else {
+            pendingDraft = null
+            showTab(link.id, tab)
+        }
+    }
+
     fun openFrom(open: SessionOpen) {
+        pendingDraft = null
         if (directory.all().none { it.id == open.linkId }) {
             pendingOpen = null
             return
@@ -1517,7 +1537,20 @@ class RemoteController(
         advanceOpen()
     }
 
+    private fun advanceDraft() {
+        val id = pendingDraft ?: return
+        val desk = desks[id] ?: return
+        if (online[id] == false || (desk.installed != null && !desk.canChat)) {
+            pendingDraft = null
+            return
+        }
+        if (!desk.canChat || !desk.projectsLoaded) return
+        pendingDraft = null
+        if (desk.openProject != null) beginDraft(id)
+    }
+
     private fun advanceOpen() {
+        advanceDraft()
         val open = pendingOpen ?: return
         val exists = directory.all().any { it.id == open.linkId }
         val desk = if (exists) desk(open.linkId) else null
@@ -1597,7 +1630,22 @@ class RemoteController(
         runningSessions = change.sessions
         runningStore.save(runningSessions)
         val viewing = desks[linkId]?.openSession?.id
-        onRunningChanged(runningSessions, sessionsToNotify(change.finished, linkId, viewing, pendingOpen))
+        val notified = sessionsToNotify(change.finished, linkId, viewing, pendingOpen)
+        saveReplies(dropRunningReplies(noteReplied(recentReplies, notified, System.currentTimeMillis()), runningSessions))
+        onRunningChanged(runningSessions, notified)
+    }
+
+    private fun forgetReply(linkId: String, sessionId: String) {
+        val next = dropReplied(recentReplies, linkId, sessionId)
+        if (next.size == recentReplies.size) return
+        saveReplies(next)
+        onRunningChanged(runningSessions, emptyList())
+    }
+
+    private fun saveReplies(next: List<RecentReply>) {
+        if (next == recentReplies) return
+        recentReplies = next
+        replyStore.save(next)
     }
 
     private fun persist() {
