@@ -1,5 +1,8 @@
 package app.tocode.android
 
+import android.graphics.BitmapFactory
+import android.util.Base64
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
@@ -12,6 +15,7 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -25,10 +29,13 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -38,7 +45,8 @@ import androidx.compose.ui.unit.sp
 @Composable
 fun FilePreviewScreen(preview: AppPreview, onBack: () -> Unit, onLoadMore: () -> Unit) {
     val scroll = rememberScrollState()
-    LaunchedEffect(preview.content, preview.truncated, preview.loading, preview.loadingMore) {
+    LaunchedEffect(preview.content, preview.truncated, preview.loading, preview.loadingMore, preview.format) {
+        if (preview.format == "image") return@LaunchedEffect
         withFrameNanos { }
         snapshotFlow { scroll.value to scroll.maxValue }.collect { (value, max) ->
             if (preview.content.isEmpty() || preview.loading || preview.loadingMore || !preview.truncated) return@collect
@@ -70,6 +78,7 @@ fun FilePreviewScreen(preview: AppPreview, onBack: () -> Unit, onLoadMore: () ->
                     preview.path.ifBlank {
                         when {
                             preview.loading -> "正在读取"
+                            preview.format == "image" -> "图片"
                             preview.format == "markdown" -> "Markdown"
                             else -> "文本"
                         }
@@ -99,6 +108,7 @@ fun FilePreviewScreen(preview: AppPreview, onBack: () -> Unit, onLoadMore: () ->
                     subtitle = "这个文件里没有内容。",
                 )
             }
+            preview.format == "image" -> ImageBody(preview.content, preview.name, Modifier.weight(1f).fillMaxWidth())
             else -> SelectionContainer(Modifier.weight(1f).fillMaxWidth()) {
                 Column(
                     modifier = Modifier
@@ -119,6 +129,44 @@ fun FilePreviewScreen(preview: AppPreview, onBack: () -> Unit, onLoadMore: () ->
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun ImageBody(content: String, name: String, modifier: Modifier) {
+    val bitmap = remember(content) { decodePreviewImage(content) }
+    if (bitmap == null) {
+        EmptyState(
+            icon = Icons.Outlined.ErrorOutline,
+            title = "打不开",
+            subtitle = "这张图没有显示出来。",
+            tone = Tone.Bad,
+        )
+        return
+    }
+    Column(
+        modifier = modifier
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 20.dp, vertical = 18.dp)
+            .navigationBarsPadding(),
+    ) {
+        Image(
+            bitmap = bitmap.asImageBitmap(),
+            contentDescription = name,
+            contentScale = ContentScale.Fit,
+            modifier = Modifier
+                .fillMaxWidth()
+                .aspectRatio(bitmap.width.toFloat() / bitmap.height.coerceAtLeast(1).toFloat()),
+        )
+    }
+}
+
+private fun decodePreviewImage(content: String): android.graphics.Bitmap? {
+    return try {
+        val bytes = Base64.decode(content, Base64.DEFAULT)
+        if (bytes.isEmpty()) null else BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+    } catch (_: IllegalArgumentException) {
+        null
     }
 }
 

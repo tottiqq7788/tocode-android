@@ -1117,6 +1117,20 @@ class RemoteController(
                 if (current.path != wait.path) return
                 if (current.loading && wait.offset > 0) return
                 val chunk = body.optString("content")
+                val format = body.optString("format").ifBlank { "text" }
+                if (format == "image") {
+                    desk.preview = current.copy(
+                        loading = false,
+                        loadingMore = false,
+                        name = body.optString("name").ifBlank { current.name },
+                        format = "image",
+                        content = chunk,
+                        next = 0,
+                        truncated = false,
+                        notice = "",
+                    )
+                    return
+                }
                 val next = body.optInt("next", wait.offset)
                 if (wait.offset > 0 && (chunk.isEmpty() || next <= wait.offset)) {
                     desk.preview = current.copy(loading = false, loadingMore = false, truncated = false)
