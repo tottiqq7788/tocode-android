@@ -1,5 +1,6 @@
 package app.tocode.android
 
+import android.content.Intent
 import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
@@ -28,7 +29,12 @@ class MainActivity : ComponentActivity() {
                 disk = disk,
                 phone = phone,
                 client = RelayClient(),
+                runningStore = RunningSessionStore(File(filesDir, RUNNING_SESSIONS_FILE)),
             ).also { shared = it }
+        }
+        controller.onRunningChanged = { _, finished ->
+            refreshSessionWidgets(applicationContext)
+            finished.forEach { showFinishedNotification(applicationContext, it) }
         }
         this.controller = controller
         setContent {
@@ -36,11 +42,30 @@ class MainActivity : ComponentActivity() {
                 RemoteScreen(controller)
             }
         }
+        openIntent(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        openIntent(intent)
     }
 
     override fun onResume() {
         super.onResume()
         controller?.ensureConnected()
+    }
+
+    private fun openIntent(intent: Intent?) {
+        val open = sessionOpenFrom(
+            intent?.getStringExtra(EXTRA_LINK_ID),
+            intent?.getStringExtra(EXTRA_PROFILE),
+            intent?.getStringExtra(EXTRA_PROJECT_ID),
+            intent?.getStringExtra(EXTRA_PROJECT_NAME),
+            intent?.getStringExtra(EXTRA_SESSION_ID),
+            intent?.getStringExtra(EXTRA_SESSION_TITLE),
+        ) ?: return
+        controller?.openFrom(open)
     }
 
     private companion object {

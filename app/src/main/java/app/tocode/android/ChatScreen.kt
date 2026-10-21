@@ -2,13 +2,16 @@ package app.tocode.android
 
 import android.content.ContentResolver
 import android.content.Context
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.provider.OpenableColumns
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -509,6 +512,7 @@ fun ChatScreen(controller: RemoteController, link: AppLink, desk: AppDesk, sessi
             removeProvisional(id)
         })
     }
+    val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
     var confirmDelete by remember { mutableStateOf(false) }
     var managing by remember { mutableStateOf(false) }
     var showFiles by rememberSaveable(session.id) { mutableStateOf(false) }
@@ -602,6 +606,11 @@ fun ChatScreen(controller: RemoteController, link: AppLink, desk: AppDesk, sessi
             },
             onSend = {
                 if (uploading) return@Composer
+                if (Build.VERSION.SDK_INT >= 33 &&
+                    ContextCompat.checkSelfPermission(context, android.Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+                ) {
+                    notificationPermission.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+                }
                 uploading = true
                 val started = controller.sendWithAttachments(link.id, draft, attachments.toList()) { ok, landed, revised ->
                     uploading = false

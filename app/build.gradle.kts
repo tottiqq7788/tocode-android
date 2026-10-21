@@ -53,6 +53,7 @@ dependencies {
     implementation("androidx.camera:camera-lifecycle:1.4.0")
     implementation("androidx.camera:camera-view:1.4.0")
     implementation("com.google.mlkit:barcode-scanning:17.3.0")
+    implementation("androidx.glance:glance-appwidget:1.1.1")
     debugImplementation("androidx.compose.ui:ui-tooling")
     testImplementation("junit:junit:4.13.2")
 }

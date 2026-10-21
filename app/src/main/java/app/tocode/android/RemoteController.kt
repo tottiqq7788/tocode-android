@@ -82,6 +82,8 @@ class RemoteController(
     private val disk: LinkDisk,
     private var phone: PhoneState,
     private val client: RelayClient,
+    private val runningStore: RunningSessionStore,
+    var onRunningChanged: (List<RunningSession>, List<RunningSession>) -> Unit = { _, _ -> },
 ) {
     var scanning by mutableStateOf(false)
     var pairing by mutableStateOf(false)
@@ -112,6 +114,10 @@ class RemoteController(
     private val statusRetry = mutableSetOf<String>()
     private val worker = Executors.newSingleThreadExecutor()
     private val main = Handler(Looper.getMainLooper())
+    private var runningSessions = runningStore.load()
+    private var pendingOpen: SessionOpen? = null
+    private var openProfileSent: SessionOpen? = null
+    private var openProjectSent: SessionOpen? = null
 
     fun links(): List<AppLink> {
         linkVersion
@@ -354,6 +360,7 @@ class RemoteController(
         desk.sessions = desk.sessions.map { if (it.id == session.id) it.copy(running = true) else it }
         desk.openSession = session.copy(running = true)
         desk.notice = ""
+        syncOne(id, session.id, session.title, running = true, online = true)
         watchRunning(id)
         return true
     }
@@ -1013,6 +1020,7 @@ class RemoteController(
                     dropWaits(link.id)
                     scheduleRetry(link, socket)
                 }
+                advanceOpen()
             }
         }
         sockets[link.id] = socket
@@ -1147,6 +1155,7 @@ class RemoteController(
             "status" -> {
                 desk.macOffline = true
                 scheduleStatusRetry(wait.linkId)
+                pendingOpen = null
                 return
             }
             "session_create", "project_create" -> {
@@ -1189,6 +1198,10 @@ class RemoteController(
                 if (desk.inflight[wait.sessionId] == requestId) desk.inflight = desk.inflight - wait.sessionId
                 if (desk.chatRequest == requestId) desk.chatRequest = null
                 desk.sessions = desk.sessions.map { if (it.id == wait.sessionId) it.copy(running = false) else it }
+                val failedTitle = desk.sessions.firstOrNull { it.id == wait.sessionId }?.title
+                    ?: desk.openSession?.takeIf { it.id == wait.sessionId }?.title
+                    ?: ""
+                syncOne(wait.linkId, wait.sessionId, failedTitle, running = false, online = online[wait.linkId] == true)
                 if (desk.openSession?.id == wait.sessionId) {
                     desk.openSession = desk.openSession?.copy(running = false)
                     desk.pendingText = ""
@@ -1278,6 +1291,8 @@ class RemoteController(
                     if (desk.inflight.containsKey(row.id)) row.copy(running = true) else row
                 }
                 desk.sessionsLoaded = true
+                val project = desk.openProject
+                if (project != null && project.id == wait.projectId) syncProject(linkId, project, desk.sessions)
                 if (desk.sessions.any { it.running } || desk.inflight.isNotEmpty()) watchRunning(linkId)
             }
             "session_create" -> {
@@ -1304,6 +1319,7 @@ class RemoteController(
                         if (requestId != null) {
                             desk.inflight = desk.inflight + (createdId to requestId)
                             desk.sessions = desk.sessions.map { if (it.id == createdId) it.copy(running = true) else it }
+                            syncOne(linkId, createdId, session.title, running = true, online = true)
                             watchRunning(linkId)
                         }
                         if (requestId == null) {
@@ -1319,6 +1335,7 @@ class RemoteController(
             }
             "session_delete" -> {
                 desk.sessions = desk.sessions.filter { it.id != wait.sessionId }
+                applyRunning(dropSession(runningSessions, wait.linkId, wait.sessionId), wait.linkId)
                 if (desk.openSession?.id == wait.sessionId) closeChat(linkId)
             }
             "session_rename" -> {
@@ -1341,6 +1358,7 @@ class RemoteController(
                 desk.turnsLoading = false
                 desk.openSession = desk.openSession?.copy(running = running)
                 desk.sessions = desk.sessions.map { if (it.id == wait.sessionId) it.copy(running = running) else it }
+                syncOne(linkId, wait.sessionId, desk.openSession?.title.orEmpty(), running = running, online = true)
                 if (running) watchRunning(linkId)
             }
             "chat" -> if (desk.inflight[wait.sessionId] == requestId || desk.chatRequest == requestId) {
@@ -1352,6 +1370,12 @@ class RemoteController(
                     if (row.id != wait.sessionId) row
                     else row.copy(title = title.ifBlank { row.title }, running = false)
                 }
+                val finishedTitle = title.ifBlank {
+                    desk.sessions.firstOrNull { it.id == wait.sessionId }?.title
+                        ?: desk.openSession?.takeIf { it.id == wait.sessionId }?.title
+                        ?: ""
+                }
+                syncOne(linkId, wait.sessionId, finishedTitle, running = false, online = true)
                 if (desk.openSession?.id == wait.sessionId) {
                     val open = desk.openSession
                     if (open != null && title.isNotBlank()) desk.openSession = open.copy(title = title, running = false)
@@ -1432,6 +1456,102 @@ class RemoteController(
                 desk.foldersNotice = text
             }
         }
+        advanceOpen()
+    }
+
+    fun openFrom(open: SessionOpen) {
+        if (directory.all().none { it.id == open.linkId }) {
+            pendingOpen = null
+            return
+        }
+        pendingOpen = open
+        openProfileSent = null
+        openProjectSent = null
+        select(open.linkId)
+        advanceOpen()
+    }
+
+    private fun advanceOpen() {
+        val open = pendingOpen ?: return
+        val exists = directory.all().any { it.id == open.linkId }
+        val desk = if (exists) desk(open.linkId) else null
+        if (desk?.installed == false) {
+            pendingOpen = null
+            return
+        }
+        val step = sessionLaunchStep(
+            open,
+            SessionLaunchState(
+                linkExists = exists,
+                online = if (exists) online[open.linkId] else false,
+                profile = desk?.profile.orEmpty(),
+                projectId = desk?.openProject?.id,
+            ),
+        )
+        when (step) {
+            SessionLaunchStep.Wait -> Unit
+            SessionLaunchStep.Offline -> pendingOpen = null
+            SessionLaunchStep.SelectProfile -> {
+                if (desk == null || !desk.canChat || openProfileSent == open) return
+                openProfileSent = open
+                openProjectSent = null
+                selectProfile(open.linkId, open.profile)
+            }
+            SessionLaunchStep.OpenProject -> {
+                if (desk == null || !desk.canChat || openProjectSent == open) return
+                openProjectSent = open
+                openProject(open.linkId, AppProject(open.projectId, open.projectName))
+                advanceOpen()
+            }
+            SessionLaunchStep.OpenSession -> {
+                pendingOpen = null
+                openProfileSent = null
+                openProjectSent = null
+                openSession(open.linkId, AppSession(open.sessionId, open.title, running = true))
+            }
+        }
+    }
+
+    private fun syncProject(linkId: String, project: AppProject, observed: List<AppSession>) {
+        val change = noteProject(
+            runningSessions,
+            linkId,
+            directory.all().firstOrNull { it.id == linkId }?.macName.orEmpty(),
+            desk(linkId).profile,
+            project.id,
+            project.name,
+            observed.map { ObservedSession(it.id, it.title, it.running) },
+            System.currentTimeMillis(),
+            online = true,
+        )
+        applyRunning(change, linkId)
+    }
+
+    private fun syncOne(linkId: String, sessionId: String, title: String, running: Boolean, online: Boolean) {
+        val desk = desks[linkId] ?: return
+        val project = desk.openProject ?: return
+        val change = noteSession(
+            runningSessions,
+            linkId,
+            directory.all().firstOrNull { it.id == linkId }?.macName.orEmpty(),
+            desk.profile,
+            project.id,
+            project.name,
+            sessionId,
+            title,
+            running,
+            System.currentTimeMillis(),
+            online,
+        )
+        applyRunning(change, linkId)
+    }
+
+    private fun applyRunning(change: RunningChange, linkId: String) {
+        if (change.sessions == runningSessions && change.finished.isEmpty()) return
+        runningSessions = change.sessions
+        runningStore.save(runningSessions)
+        val viewing = desks[linkId]?.openSession?.id
+        onRunningChanged(runningSessions, sessionsToNotify(change.finished, linkId, viewing, pendingOpen))
     }
 
     private fun persist() {
