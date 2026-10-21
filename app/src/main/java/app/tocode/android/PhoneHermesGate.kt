@@ -2,13 +2,23 @@ package app.tocode.android
 
 import org.json.JSONObject
 
-data class AppSession(val id: String, val title: String)
+data class AppSession(val id: String, val title: String, val running: Boolean = false)
 
 data class AppProject(val id: String, val name: String)
 
 data class AppTurn(val role: String, val text: String)
 
 data class AppEntry(val path: String, val name: String, val kind: String)
+
+data class AppPreview(
+    val path: String,
+    val name: String,
+    val loading: Boolean = false,
+    val format: String = "text",
+    val content: String = "",
+    val truncated: Boolean = false,
+    val notice: String = "",
+)
 
 fun chatEntranceClosed(hermesInstalled: Boolean?): Boolean = hermesInstalled == false
 
@@ -70,7 +80,7 @@ fun parseSessions(body: JSONObject): List<AppSession> {
             val id = row.optString("id")
             if (id.isBlank()) continue
             val title = row.optString("title").ifBlank { "未命名会话" }
-            add(AppSession(id, title))
+            add(AppSession(id, title, row.optBoolean("running")))
         }
     }
 }
@@ -81,8 +91,10 @@ fun parseTurns(body: JSONObject): List<AppTurn> {
         for (index in 0 until rows.length()) {
             val row = rows.optJSONObject(index) ?: continue
             val role = row.optString("role")
+            val text = row.optString("text")
             if (role != "user" && role != "assistant") continue
-            add(AppTurn(role, row.optString("text")))
+            if (role == "assistant" && text.isBlank()) continue
+            add(AppTurn(role, text))
         }
     }
 }

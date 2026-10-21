@@ -140,7 +140,9 @@ fun FilesTab(controller: RemoteController, link: AppLink, desk: AppDesk, online:
                         EntryRow(
                             entry = entry,
                             count = if (entry.isFolder()) desk.entries.count { it.parent() == entry.path } else 0,
-                            onOpen = { path = entry.path },
+                            onOpen = {
+                                if (entry.isFolder()) path = entry.path else controller.openPreview(link.id, entry)
+                            },
                         )
                     }
                 }
@@ -191,7 +193,7 @@ private fun EntryRow(entry: AppEntry, count: Int, onOpen: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .then(if (folder) Modifier.clickable(onClick = onOpen) else Modifier)
+            .clickable(onClick = onOpen)
             .padding(horizontal = 14.dp, vertical = 11.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -209,9 +211,7 @@ private fun EntryRow(entry: AppEntry, count: Int, onOpen: () -> Unit) {
                 color = SlateLight,
             )
         }
-        if (folder) {
-            Icon(Icons.AutoMirrored.Outlined.ArrowForwardIos, contentDescription = null, tint = SlateLight, modifier = Modifier.size(13.dp))
-        }
+        Icon(Icons.AutoMirrored.Outlined.ArrowForwardIos, contentDescription = null, tint = SlateLight, modifier = Modifier.size(13.dp))
     }
 }
 

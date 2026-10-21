@@ -88,6 +88,12 @@ fun RemoteScreen(controller: RemoteController) {
         ChatScreen(controller, link, desk, session)
         return
     }
+    val preview = desk.preview
+    if (preview != null) {
+        BackHandler { controller.closePreview(link.id) }
+        FilePreviewScreen(preview) { controller.closePreview(link.id) }
+        return
+    }
     DeviceScreen(controller, link, desk)
 }
 
@@ -153,6 +159,23 @@ private fun Step(index: Int, text: String) {
 
 private data class TabItem(val key: String, val label: String, val icon: ImageVector)
 
+@Composable
+private fun SessionAddIcon() {
+    Box(Modifier.size(24.dp)) {
+        Icon(Icons.Outlined.ChatBubbleOutline, contentDescription = null, modifier = Modifier.fillMaxSize())
+        Box(
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .size(12.dp)
+                .clip(CircleShape)
+                .background(Color.White),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(Icons.Outlined.Add, contentDescription = "新建会话", tint = Pine, modifier = Modifier.size(10.dp))
+        }
+    }
+}
+
 private val tabs = listOf(
     TabItem("sessions", "会话", Icons.Outlined.ChatBubbleOutline),
     TabItem("files", "目录", Icons.Outlined.FolderOpen),
@@ -163,7 +186,6 @@ private val tabs = listOf(
 private fun DeviceScreen(controller: RemoteController, link: AppLink, desk: AppDesk) {
     var showSheet by remember { mutableStateOf(false) }
     var showProjects by remember { mutableStateOf(false) }
-    var showCreate by remember { mutableStateOf(false) }
     var pickFolder by remember { mutableStateOf(false) }
     var chosenFolder by remember { mutableStateOf<String?>(null) }
     var unlinkTarget by remember { mutableStateOf<AppLink?>(null) }
@@ -199,8 +221,20 @@ private fun DeviceScreen(controller: RemoteController, link: AppLink, desk: AppD
                 tabs.forEach { tab ->
                     NavigationBarItem(
                         selected = desk.tab == tab.key,
-                        onClick = { if (desk.tab != tab.key) controller.showTab(link.id, tab.key) },
-                        icon = { Icon(tab.icon, contentDescription = null) },
+                        onClick = {
+                            if (desk.tab == tab.key) {
+                                if (tab.key == "sessions") controller.beginDraft(link.id)
+                            } else {
+                                controller.showTab(link.id, tab.key)
+                            }
+                        },
+                        icon = {
+                            if (tab.key == "sessions" && desk.tab == "sessions" && desk.openProject != null) {
+                                SessionAddIcon()
+                            } else {
+                                Icon(tab.icon, contentDescription = null)
+                            }
+                        },
                         label = { Text(tab.label, style = MaterialTheme.typography.labelMedium) },
                         colors = NavigationBarItemDefaults.colors(
                             selectedIconColor = Pine,
@@ -223,7 +257,7 @@ private fun DeviceScreen(controller: RemoteController, link: AppLink, desk: AppD
                     link,
                     desk,
                     online,
-                    onCreate = { if (desk.openProject == null) pickFolder = true else showCreate = true },
+                    onCreate = { pickFolder = true },
                 )
             }
         }
@@ -262,19 +296,6 @@ private fun DeviceScreen(controller: RemoteController, link: AppLink, desk: AppD
             onCreate = {
                 chosenFolder = null
                 controller.createProject(link.id, it, folder)
-            },
-        )
-    }
-    if (showCreate) {
-        NameDialog(
-            title = "新建会话",
-            hint = "会话会留在当前项目里。",
-            placeholder = "会话标题（可不填）",
-            requireName = false,
-            onDismiss = { showCreate = false },
-            onCreate = {
-                showCreate = false
-                controller.createSession(link.id, it)
             },
         )
     }

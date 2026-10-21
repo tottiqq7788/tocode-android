@@ -39,13 +39,18 @@ import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.ArrowForwardIos
 import androidx.compose.material.icons.automirrored.outlined.Send
 import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.outlined.CloudOff
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Tune
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -54,6 +59,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -112,25 +118,21 @@ fun SessionsTab(
                     }
                 }
             } else {
-                item {
-                    SectionTitle(
-                        project.name,
-                        if (desk.sessionsLoaded) "${desk.sessions.size} 个会话" else "",
-                        Modifier.padding(top = 8.dp),
-                    )
-                }
                 when {
                     !desk.sessionsLoaded -> item { LoadingState("正在读取会话…") }
                     desk.sessions.isEmpty() -> item {
                         EmptyState(
                             icon = Icons.Outlined.ChatBubbleOutline,
                             title = "这个项目还没有会话",
-                            subtitle = "点上方「新建会话」，开始第一段对话。",
+                            subtitle = "再次点下方「会话」，开始第一段对话。",
                             tone = Tone.Good,
                         )
                     }
                     else -> items(desk.sessions, key = { it.id }) { session ->
-                        SessionRow(session) { controller.openSession(link.id, session) }
+                        SessionRow(
+                            session,
+                            running = session.running || desk.inflight.containsKey(session.id),
+                        ) { controller.openSession(link.id, session) }
                     }
                 }
             }
@@ -158,6 +160,48 @@ fun SessionsTab(
 }
 
 @Composable
+private fun ReadyCard(desk: AppDesk, onCreate: () -> Unit) {
+    val sessions = when {
+        desk.openProject == null -> "未选项目"
+        desk.sessionsLoaded -> "${desk.sessions.size} 个会话"
+        else -> "正在读取会话"
+    }
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(24.dp))
+            .background(HeroBrush)
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+    ) {
+        Column {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                GlassChip(if (desk.running) "服务运行中" else "服务未启动", desk.running)
+                GlassChip(sessions, desk.openProject != null)
+            }
+            if (desk.openProject == null) {
+                Spacer(Modifier.height(14.dp))
+                Row(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(Color.White)
+                        .clickable(enabled = !desk.creating, onClick = onCreate)
+                        .padding(horizontal = 16.dp, vertical = 11.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    if (desk.creating) {
+                        CircularProgressIndicator(color = Pine, strokeWidth = 2.dp, modifier = Modifier.size(16.dp))
+                    } else {
+                        Icon(Icons.Outlined.Add, contentDescription = null, tint = Pine, modifier = Modifier.size(18.dp))
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    Text(if (desk.creating) "正在创建…" else "新建项目", style = MaterialTheme.typography.labelLarge, color = Pine)
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun HermesHero(desk: AppDesk, online: Boolean?, onCreate: () -> Unit) {
     val ready = desk.canChat
     val (title, subtitle) = when {
@@ -167,8 +211,11 @@ private fun HermesHero(desk: AppDesk, online: Boolean?, onCreate: () -> Unit) {
         desk.installed == null -> "正在确认 Hermes…" to "马上就好。"
         desk.installed == false -> "这台电脑没有 Hermes" to "手机聊天和目录已关闭，遥控仍然可以用。"
         !desk.running -> "Hermes 没开" to "在 Mac 上打开「应用 → 网关链接」后，点右上角刷新。"
-        desk.openProject != null -> "Hermes 已就绪" to "对话使用「${desk.openProject?.name}」的文件夹。"
-        else -> "Hermes 已就绪" to "在右上角切换档案和项目，会话和目录都会跟着走。"
+        else -> "" to ""
+    }
+    if (ready) {
+        ReadyCard(desk, onCreate)
+        return
     }
     Box(
         modifier = Modifier
@@ -191,34 +238,6 @@ private fun HermesHero(desk: AppDesk, online: Boolean?, onCreate: () -> Unit) {
                 Spacer(Modifier.height(14.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     GlassChip(if (desk.running) "服务运行中" else "服务未启动", desk.running)
-                    GlassChip(desk.openProject?.name ?: "未选项目", desk.openProject != null)
-                }
-            }
-            if (ready) {
-                Spacer(Modifier.height(18.dp))
-                Row(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(14.dp))
-                        .background(Color.White)
-                        .clickable(enabled = !desk.creating, onClick = onCreate)
-                        .padding(horizontal = 16.dp, vertical = 11.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    if (desk.creating) {
-                        CircularProgressIndicator(color = Pine, strokeWidth = 2.dp, modifier = Modifier.size(16.dp))
-                    } else {
-                        Icon(Icons.Outlined.Add, contentDescription = null, tint = Pine, modifier = Modifier.size(18.dp))
-                    }
-                    Spacer(Modifier.width(8.dp))
-                    Text(
-                        when {
-                            desk.creating -> "正在创建…"
-                            desk.openProject == null -> "新建项目"
-                            else -> "新建会话"
-                        },
-                        style = MaterialTheme.typography.labelLarge,
-                        color = Pine,
-                    )
                 }
             }
         }
@@ -309,7 +328,7 @@ private fun ProjectRow(project: AppProject, onClick: () -> Unit) {
 }
 
 @Composable
-private fun SessionRow(session: AppSession, onClick: () -> Unit) {
+private fun SessionRow(session: AppSession, running: Boolean, onClick: () -> Unit) {
     Panel(onClick = onClick, padding = PaddingValues(horizontal = 14.dp, vertical = 14.dp), radius = 18.dp) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(
@@ -326,7 +345,11 @@ private fun SessionRow(session: AppSession, onClick: () -> Unit) {
             Column(modifier = Modifier.weight(1f)) {
                 Text(session.title, style = MaterialTheme.typography.titleMedium, color = Ink, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Spacer(Modifier.height(2.dp))
-                Text("轻点继续对话", style = MaterialTheme.typography.bodySmall, color = SlateLight)
+                Text(
+                    if (running) "正在回复" else "轻点继续对话",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (running) Pine else SlateLight,
+                )
             }
             Icon(
                 Icons.AutoMirrored.Outlined.ArrowForwardIos,
@@ -355,12 +378,16 @@ fun ChatScreen(controller: RemoteController, link: AppLink, desk: AppDesk, sessi
         }
     }
     val online = controller.online[link.id]
+    var confirmDelete by remember { mutableStateOf(false) }
+    var renaming by remember { mutableStateOf(false) }
     val canSend = online == true && desk.canChat && !desk.sending
     Column(modifier = Modifier.fillMaxSize().background(Canvas)) {
         ChatTopBar(
             title = session.title,
             subtitle = if (desk.sending) "Hermes 正在回复…" else "${link.macName} · ${linkState(online, desk).label}",
             onBack = { controller.closeChat(link.id) },
+            onTitle = { renaming = true },
+            onDelete = if (session.id.isNotEmpty()) ({ confirmDelete = true }) else null,
             onRefresh = { controller.refreshCurrent(link.id) },
         )
         val banner = when {
@@ -393,10 +420,44 @@ fun ChatScreen(controller: RemoteController, link: AppLink, desk: AppDesk, sessi
             onSend = { if (controller.sendChat(link.id, draft)) draft = "" },
         )
     }
+    if (renaming) {
+        TitleDialog(
+            initial = session.title,
+            onDismiss = { renaming = false },
+            onSave = {
+                renaming = false
+                controller.renameSession(link.id, it)
+            },
+        )
+    }
+    if (confirmDelete) {
+        AlertDialog(
+            onDismissRequest = { confirmDelete = false },
+            containerColor = Paper,
+            title = { Text("删除「${session.title}」？") },
+            text = { Text("这台 Mac 上的这段对话会被删掉，不能恢复。", color = Slate) },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmDelete = false
+                    controller.deleteSession(link.id)
+                }) { Text("删除", color = Coral) }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmDelete = false }) { Text("取消", color = Slate) }
+            },
+        )
+    }
 }
 
 @Composable
-private fun ChatTopBar(title: String, subtitle: String, onBack: () -> Unit, onRefresh: () -> Unit) {
+private fun ChatTopBar(
+    title: String,
+    subtitle: String,
+    onBack: () -> Unit,
+    onTitle: () -> Unit,
+    onDelete: (() -> Unit)?,
+    onRefresh: () -> Unit,
+) {
     Column(modifier = Modifier.fillMaxWidth().background(Paper).statusBarsPadding()) {
         Row(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 6.dp),
@@ -406,8 +467,20 @@ private fun ChatTopBar(title: String, subtitle: String, onBack: () -> Unit, onRe
                 Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "返回", tint = Ink)
             }
             Column(modifier = Modifier.weight(1f)) {
-                Text(title, style = MaterialTheme.typography.titleMedium, color = Ink, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(
+                    title,
+                    modifier = Modifier.clickable(onClick = onTitle),
+                    style = MaterialTheme.typography.titleMedium,
+                    color = Ink,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
                 Text(subtitle, style = MaterialTheme.typography.labelMedium, color = Slate, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            if (onDelete != null) {
+                IconButton(onClick = onDelete) {
+                    Icon(Icons.Outlined.DeleteOutline, contentDescription = "删除会话", tint = Slate)
+                }
             }
             IconButton(onClick = onRefresh) {
                 Icon(Icons.Outlined.Refresh, contentDescription = "刷新", tint = Slate)
@@ -415,6 +488,36 @@ private fun ChatTopBar(title: String, subtitle: String, onBack: () -> Unit, onRe
         }
         Box(Modifier.fillMaxWidth().height(1.dp).background(Hairline))
     }
+}
+
+@Composable
+private fun TitleDialog(initial: String, onDismiss: () -> Unit, onSave: (String) -> Unit) {
+    var text by remember { mutableStateOf(initial) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Paper,
+        title = { Text("修改标题") },
+        text = {
+            OutlinedTextField(
+                value = text,
+                onValueChange = { text = it.take(80) },
+                singleLine = true,
+                shape = RoundedCornerShape(14.dp),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = Pine,
+                    unfocusedBorderColor = Hairline,
+                    cursorColor = Pine,
+                ),
+                modifier = Modifier.fillMaxWidth(),
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = { if (text.isNotBlank()) onSave(text) }) { Text("保存", color = Pine) }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("取消", color = Slate) }
+        },
+    )
 }
 
 @Composable
