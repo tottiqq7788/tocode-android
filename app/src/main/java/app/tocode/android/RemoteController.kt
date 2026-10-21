@@ -392,7 +392,7 @@ class RemoteController(
         id: String,
         text: String,
         files: List<ChatAttachment>,
-        onFinished: (Boolean, List<String?>) -> Unit,
+        onFinished: (Boolean, List<String?>, String) -> Unit,
     ): Boolean {
         val desk = desk(id)
         if (desk.sending || !attachmentBusy.add(id)) return false
@@ -405,63 +405,119 @@ class RemoteController(
             attachmentBusy.remove(id)
             return false
         }
-        if (files.isEmpty()) {
+        if (files.isEmpty() && attachmentSpans(text).isEmpty()) {
             attachmentBusy.remove(id)
-            onFinished(sendChat(id, text), emptyList())
+            onFinished(sendChat(id, text), emptyList(), text)
             return true
         }
-        deliver(id, text, files, 0, MutableList(files.size) { latestAttachment(files[it]).landed }, onFinished)
+        resolveDraft(id, text, files, onFinished)
         return true
     }
 
-    private fun deliver(
+    private fun resolveDraft(
+        id: String,
+        text: String,
+        files: List<ChatAttachment>,
+        onFinished: (Boolean, List<String?>, String) -> Unit,
+    ) {
+        val waiting = files.map { latestAttachment(it) }.filter {
+            it.landed.isNullOrBlank() && it.hold.isNullOrBlank() && !it.failed && it.bytes.isNotEmpty()
+        }
+        if (waiting.isNotEmpty()) {
+            val file = waiting.first()
+            ensureHold(id, file) { held ->
+                val token = provisionalToken(file.id)
+                val reserved = held?.reserved
+                if (held == null || reserved.isNullOrBlank()) {
+                    if (text.contains(token)) {
+                        if (desk(id).notice.isBlank()) desk(id).notice = "还有附件没传上"
+                        attachmentBusy.remove(id)
+                        onFinished(false, files.map { latestAttachment(it).landed }, text)
+                    } else {
+                        resolveDraft(id, text, files, onFinished)
+                    }
+                    return@ensureHold
+                }
+                resolveDraft(id, text.replace(token, attachmentMention(reserved)), files, onFinished)
+            }
+            return
+        }
+        if (attachmentSpans(text).any { it.provisionalId != null }) {
+            if (desk(id).notice.isBlank()) desk(id).notice = "还有附件没传上"
+            attachmentBusy.remove(id)
+            onFinished(false, files.map { latestAttachment(it).landed }, text)
+            return
+        }
+        dropUnreferenced(id, text, files, 0, onFinished)
+    }
+
+    private fun dropUnreferenced(
         id: String,
         text: String,
         files: List<ChatAttachment>,
         index: Int,
-        paths: MutableList<String?>,
-        onFinished: (Boolean, List<String?>) -> Unit,
+        onFinished: (Boolean, List<String?>, String) -> Unit,
     ) {
         if (index >= files.size) {
-            attachmentBusy.remove(id)
-            val ready = paths.mapNotNull { it?.takeIf(String::isNotBlank) }
-            if (ready.size != files.size) {
-                onFinished(false, paths.toList())
-                return
-            }
-            val composed = hermesTextWithPaths(text, ready)
-            if (composed == null) {
-                desk(id).notice = "附上的路径太长了"
-                onFinished(false, paths.toList())
-                return
-            }
-            onFinished(sendChat(id, composed), paths.toList())
+            placeReferenced(id, text, files, 0, onFinished)
             return
         }
         val file = latestAttachment(files[index])
-        if (!paths[index].isNullOrBlank() || !file.landed.isNullOrBlank()) {
-            if (paths[index].isNullOrBlank()) paths[index] = file.landed
-            deliver(id, text, files, index + 1, paths, onFinished)
+        val path = file.reserved
+        val mentioned = !path.isNullOrBlank() && referencedAttachmentPaths(text).contains(path)
+        val hold = file.hold
+        if (!mentioned && !hold.isNullOrBlank() && file.landed.isNullOrBlank()) {
+            enqueueFile {
+                dropHold(id, hold) {
+                    heldFiles.remove(file.id)
+                    dropUnreferenced(id, text, files, index + 1, onFinished)
+                }
+            }
             return
         }
-        ensureHold(id, file) { held ->
-            val hold = held?.hold
-            if (held == null || hold.isNullOrBlank()) {
-                attachmentBusy.remove(id)
-                onFinished(false, paths.toList())
-                return@ensureHold
+        dropUnreferenced(id, text, files, index + 1, onFinished)
+    }
+
+    private fun placeReferenced(
+        id: String,
+        text: String,
+        files: List<ChatAttachment>,
+        index: Int,
+        onFinished: (Boolean, List<String?>, String) -> Unit,
+    ) {
+        if (index >= files.size) {
+            attachmentBusy.remove(id)
+            if (text.trim().isEmpty()) {
+                onFinished(false, files.map { latestAttachment(it).landed }, text)
+                return
             }
-            enqueueFile {
-                placeHold(id, held) { saved ->
-                    if (saved.isNullOrBlank()) {
-                        onFinished(false, paths.toList())
-                        attachmentBusy.remove(id)
-                        return@placeHold
-                    }
-                    paths[index] = saved
-                    heldFiles[file.id]?.let { publish(it, held.copy(landed = saved, hold = null, bytes = ByteArray(0), failed = false)) }
-                    deliver(id, text, files, index + 1, paths, onFinished)
+            onFinished(sendChat(id, text), files.map { latestAttachment(it).landed }, text)
+            return
+        }
+        val file = latestAttachment(files[index])
+        val path = file.reserved
+        val mentioned = !path.isNullOrBlank() && referencedAttachmentPaths(text).contains(path)
+        if (!mentioned || !file.landed.isNullOrBlank()) {
+            placeReferenced(id, text, files, index + 1, onFinished)
+            return
+        }
+        if (file.hold.isNullOrBlank() || file.failed) {
+            if (desk(id).notice.isBlank()) desk(id).notice = "还有附件没传上"
+            attachmentBusy.remove(id)
+            onFinished(false, files.map { latestAttachment(it).landed }, text)
+            return
+        }
+        enqueueFile {
+            placeHold(id, file) { saved ->
+                if (saved.isNullOrBlank() || saved != path) {
+                    attachmentBusy.remove(id)
+                    onFinished(false, files.map { latestAttachment(it).landed }, text)
+                    return@placeHold
                 }
+                heldFiles[file.id]?.let {
+                    publish(it, file.copy(landed = saved, hold = null, reserved = saved, bytes = ByteArray(0), failed = false))
+                }
+                placeReferenced(id, text, files, index + 1, onFinished)
             }
         }
     }
@@ -491,11 +547,12 @@ class RemoteController(
             transmitHold(id, held.file, project.id) { outcome ->
                 held.running = false
                 val hold = outcome?.hold
-                if (hold.isNullOrBlank()) {
+                val reserved = outcome?.path
+                if (hold.isNullOrBlank() || reserved.isNullOrBlank()) {
                     publish(held, held.file.copy(failed = true))
                     return@transmitHold
                 }
-                val staged = attachmentAfterHold(held.file, hold)
+                val staged = attachmentAfterHold(held.file, hold, reserved)
                 publish(held, staged)
                 if (held.released) enqueueFile { dropHold(id, hold) }
             }
@@ -511,7 +568,7 @@ class RemoteController(
         val held = heldFiles[file.id] ?: HeldFile(file).also { heldFiles[file.id] = it }
         lateinit var listener: (ChatAttachment) -> Unit
         listener = { updated ->
-            val ready = !updated.hold.isNullOrBlank()
+            val ready = !updated.hold.isNullOrBlank() && !updated.reserved.isNullOrBlank()
             val gaveUp = updated.failed && !held.running
             if (ready || gaveUp) {
                 held.listeners.remove(listener)
@@ -598,9 +655,10 @@ class RemoteController(
         trackFile(id, requestId, quiet = false) { outcome -> onResult(outcome?.path) }
     }
 
-    private fun dropHold(id: String, hold: String) {
+    private fun dropHold(id: String, hold: String, after: () -> Unit = {}) {
         val socket = sockets[id]
         if (socket == null || online[id] != true) {
+            after()
             fileJobDone()
             return
         }
@@ -610,10 +668,11 @@ class RemoteController(
             .put("request_id", requestId)
             .put("hold_id", hold)
         if (!socket.send(body.toString())) {
+            after()
             fileJobDone()
             return
         }
-        trackFile(id, requestId, quiet = true) { }
+        trackFile(id, requestId, quiet = true) { after() }
     }
 
     private fun trackFile(id: String, requestId: String, quiet: Boolean, onResult: (FileOutcome?) -> Unit) {
@@ -1006,7 +1065,9 @@ class RemoteController(
                 val path = message.optString("path")
                 val hold = message.optString("hold_id")
                 val dropped = message.optBoolean("dropped")
-                if (message.optBoolean("ok") && path.isNotBlank()) {
+                if (message.optBoolean("ok") && path.isNotBlank() && hold.isNotBlank()) {
+                    wait.callback(FileOutcome(path = path, hold = hold))
+                } else if (message.optBoolean("ok") && path.isNotBlank()) {
                     wait.callback(FileOutcome(path = path))
                 } else if (message.optBoolean("ok") && hold.isNotBlank()) {
                     wait.callback(FileOutcome(hold = hold))

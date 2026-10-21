@@ -191,6 +191,30 @@ class LinkDirectoryTest {
         assertEquals(0, held.bytes.size)
         assertEquals("ready", attachmentTransfer(held.copy(landed = "对话附件-图片/965.jpg")))
         assertEquals("965.jpg · 没传上", attachmentLabel(fresh.copy(failed = true)))
+        val reserved = attachmentAfterHold(fresh, "11111111-1111-1111-1111-111111111111", "对话附件-图片/965.jpg")
+        assertEquals("对话附件-图片/965.jpg", reserved.reserved)
+        assertEquals("place", attachmentTransfer(reserved))
+    }
+
+    @Test
+    fun attachmentChipIsTheAtPathInsideTheSentence() {
+        val text = "这张@对话附件-图片/965.jpg图片是啥？"
+        val spans = attachmentSpans(text)
+        assertEquals(1, spans.size)
+        assertEquals("对话附件-图片/965.jpg", spans[0].path)
+        assertEquals("965.jpg", spans[0].path!!.substringAfterLast('/'))
+        assertTrue(attachmentSpans("对话附件-图片/965.jpg").isEmpty())
+        assertEquals("对话附件-文件/说明.pdf", attachmentSpans("@对话附件-文件/说明.pdf后面").single().path)
+        assertEquals("对话附件-文件/readme", attachmentSpans("前@对话附件-文件/readme后面").single().path)
+        assertEquals("这张图片是啥？", coerceAttachmentTokens(text, text.removeRange(spans[0].end - 1, spans[0].end)))
+        assertEquals("这张x图片是啥？", coerceAttachmentTokens(text, text.replace("@对话附件-图片/965.jpg", "x")))
+        val id = "11111111-1111-1111-1111-111111111111"
+        val pending = "看${provisionalToken(id)}这个"
+        val pendingSpan = attachmentSpans(pending).single()
+        assertEquals(id, pendingSpan.provisionalId)
+        assertEquals("看这个", coerceAttachmentTokens(pending, pending.removeRange(pendingSpan.end - 1, pendingSpan.end)))
+        assertEquals(setOf("对话附件-图片/965.jpg"), referencedAttachmentPaths(text))
+        assertEquals("@对话附件-图片/965.jpg", attachmentMention("对话附件-图片/965.jpg"))
     }
 
     @Test

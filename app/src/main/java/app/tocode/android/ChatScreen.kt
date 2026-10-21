@@ -27,6 +27,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -34,6 +35,7 @@ import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.lazy.LazyColumn
@@ -78,6 +80,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -92,11 +95,20 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextLinkStyles
 import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.OffsetMapping
+import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.input.TransformedText
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.withLink
 import androidx.compose.ui.text.style.TextAlign
@@ -404,6 +416,7 @@ private val suggestions = listOf(
 @Composable
 fun ChatScreen(controller: RemoteController, link: AppLink, desk: AppDesk, session: AppSession) {
     var draft by rememberSaveable(session.id) { mutableStateOf("") }
+    var cursor by remember(session.id) { mutableIntStateOf(0) }
     val attachments = remember(session.id) { mutableStateListOf<ChatAttachment>() }
     var uploading by remember(session.id) { mutableStateOf(false) }
     DisposableEffect(session.id) {
@@ -415,9 +428,46 @@ fun ChatScreen(controller: RemoteController, link: AppLink, desk: AppDesk, sessi
     val restore = desk.restoreDraft
     LaunchedEffect(restore) {
         if (restore.isNotEmpty()) {
-            if (draft.isBlank()) draft = restore
+            if (draft.isBlank()) {
+                draft = restore
+                cursor = restore.length
+            }
             desk.restoreDraft = ""
         }
+    }
+    fun insertProvisional(file: ChatAttachment): Boolean {
+        val token = provisionalToken(file.id)
+        if (draft.length + token.length > 4000) {
+            desk.notice = "消息太长，放不下这个文件"
+            return false
+        }
+        val at = cursor.coerceIn(0, draft.length)
+        draft = draft.substring(0, at) + token + draft.substring(at)
+        cursor = at + token.length
+        attachments.add(file)
+        return true
+    }
+    fun applyHeldAttachment(updated: ChatAttachment) {
+        val index = attachments.indexOfFirst { it.id == updated.id }
+        if (index >= 0) attachments[index] = updated
+        val path = updated.reserved
+        if (path.isNullOrBlank()) return
+        val token = provisionalToken(updated.id)
+        val mention = attachmentMention(path)
+        val at = draft.indexOf(token)
+        if (at < 0) return
+        draft = draft.replace(token, mention)
+        if (cursor > at) cursor = (cursor + mention.length - token.length).coerceIn(0, draft.length)
+    }
+    fun removeProvisional(id: String) {
+        draft = draft.replace(provisionalToken(id), "")
+        cursor = cursor.coerceIn(0, draft.length)
+        attachments.removeAll { it.id == id }
+    }
+    fun openAttachment(path: String) {
+        val name = path.substringAfterLast('/')
+        val kind = if (path.startsWith("对话附件-图片/")) "image" else "file"
+        controller.openPreview(link.id, AppEntry(path, name, kind))
     }
     val online = controller.online[link.id]
     val pages = exchanges(chatBlocks(desk.turns))
@@ -426,10 +476,22 @@ fun ChatScreen(controller: RemoteController, link: AppLink, desk: AppDesk, sessi
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
-        takeAttachment(context, scope, uri, "image", attachments, desk, link.id, controller)
+        takeAttachment(context, scope, uri, "image", { attachments.size }, desk, link.id, controller, { file ->
+            insertProvisional(file)
+        }, { updated ->
+            applyHeldAttachment(updated)
+        }, { id ->
+            removeProvisional(id)
+        })
     }
     val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        takeAttachment(context, scope, uri, "file", attachments, desk, link.id, controller)
+        takeAttachment(context, scope, uri, "file", { attachments.size }, desk, link.id, controller, { file ->
+            insertProvisional(file)
+        }, { updated ->
+            applyHeldAttachment(updated)
+        }, { id ->
+            removeProvisional(id)
+        })
     }
     var confirmDelete by remember { mutableStateOf(false) }
     var managing by remember { mutableStateOf(false) }
@@ -456,7 +518,10 @@ fun ChatScreen(controller: RemoteController, link: AppLink, desk: AppDesk, sessi
         Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
             when {
                 desk.turnsLoading && desk.turns.isEmpty() -> LoadingState("正在读取对话…", Modifier.align(Alignment.Center))
-                desk.turns.isEmpty() && !desk.sending -> ChatWelcome(onPick = { draft = it })
+                desk.turns.isEmpty() && !desk.sending -> ChatWelcome(onPick = {
+                    draft = it
+                    cursor = it.length
+                })
                 else -> MessageList(
                     sessionID = desk.openSession?.id ?: "",
                     pageIndex = pageIndex,
@@ -464,6 +529,7 @@ fun ChatScreen(controller: RemoteController, link: AppLink, desk: AppDesk, sessi
                     latest = pageCount == 0 || (pageIndex >= 0 && pageIndex == pageCount - 1),
                     sending = desk.sending,
                     entries = desk.entries,
+                    onOpenAttachment = { openAttachment(it) },
                 ) { span ->
                     if (span.folder) {
                         controller.openDirectory(link.id, span.path)
@@ -475,15 +541,19 @@ fun ChatScreen(controller: RemoteController, link: AppLink, desk: AppDesk, sessi
                 }
             }
         }
+        val preparing = attachments.any {
+            it.bytes.isEmpty() && it.hold.isNullOrBlank() && it.reserved.isNullOrBlank() && it.landed.isNullOrBlank() && !it.failed
+        }
+        val pendingLabels = attachments.filter { it.reserved.isNullOrBlank() }.associate { it.id to attachmentLabel(it) }
         Composer(
             draft = draft,
-            onDraft = { draft = it },
-            attachments = attachments,
-            onRemove = { id ->
-                val file = attachments.find { it.id == id } ?: return@Composer
-                attachments.removeAll { it.id == id }
-                controller.releaseAttachment(link.id, file)
+            cursor = cursor,
+            onDraft = { text, nextCursor ->
+                draft = text
+                cursor = nextCursor
             },
+            pendingLabels = pendingLabels,
+            onOpenPath = { openAttachment(it) },
             onPickImage = {
                 if (attachments.size >= ATTACHMENT_COUNT) desk.notice = "一次最多带 10 个文件"
                 else imagePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
@@ -499,7 +569,7 @@ fun ChatScreen(controller: RemoteController, link: AppLink, desk: AppDesk, sessi
             onBack = { pinned = pagerTarget(pageCount, pageIndex, forward = false) },
             onForward = { pinned = pagerTarget(pageCount, pageIndex, forward = true) },
             fieldEnabled = online == true && desk.canChat && !desk.sending && !uploading,
-            canSubmit = canSend && !uploading && (draft.isNotBlank() || attachments.isNotEmpty()),
+            canSubmit = canSend && !uploading && !preparing && draft.isNotBlank(),
             busy = desk.sending || uploading,
             placeholder = when {
                 uploading -> "正在保存附件…"
@@ -511,15 +581,18 @@ fun ChatScreen(controller: RemoteController, link: AppLink, desk: AppDesk, sessi
             onSend = {
                 if (uploading) return@Composer
                 uploading = true
-                val started = controller.sendWithAttachments(link.id, draft, attachments.toList()) { ok, landed ->
+                val started = controller.sendWithAttachments(link.id, draft, attachments.toList()) { ok, landed, revised ->
                     uploading = false
                     if (ok) {
                         attachments.forEach { controller.finishAttachment(it.id) }
                         draft = ""
+                        cursor = 0
                         attachments.clear()
                         pinned = null
                     } else {
                         desk.restoreDraft = ""
+                        draft = revised
+                        cursor = cursor.coerceIn(0, revised.length)
                         val updated = landedAttachments(attachments.toList(), landed)
                         attachments.clear()
                         attachments.addAll(updated)
@@ -540,7 +613,10 @@ fun ChatScreen(controller: RemoteController, link: AppLink, desk: AppDesk, sessi
                 onQuote = { absolute ->
                     val next = appendCitation(draft, absolute)
                     if (next == null) desk.notice = "消息太长，放不下这条路径"
-                    else draft = next
+                    else {
+                        draft = next
+                        cursor = next.length
+                    }
                 },
             )
         }
@@ -772,6 +848,7 @@ private fun MessageList(
     latest: Boolean,
     sending: Boolean,
     entries: List<AppEntry>,
+    onOpenAttachment: (String) -> Unit,
     onOpenPath: (PathSpan) -> Unit,
 ) {
     val listState = rememberLazyListState()
@@ -793,7 +870,7 @@ private fun MessageList(
         itemsIndexed(blocks, key = { index, _ -> "$pageIndex-$index" }) { index, block ->
             val live = latest && sending && index == blocks.lastIndex && block is ChatBlock.Process
             when (block) {
-                is ChatBlock.User -> UserBubble(block.text)
+                is ChatBlock.User -> UserBubble(block.text, onOpenAttachment)
                 is ChatBlock.Reply -> AssistantBubble(block.text, entries, onOpenPath)
                 is ChatBlock.Process -> ProcessBlock(block.lines, live)
             }
@@ -819,7 +896,11 @@ private fun copyable(text: String): Modifier {
 }
 
 @Composable
-private fun UserBubble(text: String) {
+private fun UserBubble(text: String, onOpen: (String) -> Unit) {
+    val chips = remember(text) { userChipText(text) }
+    val clipboard = LocalClipboardManager.current
+    val context = LocalContext.current
+    var layout by remember(text) { mutableStateOf<TextLayoutResult?>(null) }
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
         Box(
             modifier = Modifier
@@ -827,10 +908,32 @@ private fun UserBubble(text: String) {
                 .widthIn(max = 320.dp)
                 .clip(RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp, bottomStart = 20.dp, bottomEnd = 6.dp))
                 .background(Pine)
-                .then(copyable(text))
+                .then(if (chips == null) copyable(text) else Modifier)
                 .padding(horizontal = 15.dp, vertical = 11.dp),
         ) {
-            Text(text, style = MaterialTheme.typography.bodyLarge, color = Color.White)
+            if (chips == null) {
+                Text(text, style = MaterialTheme.typography.bodyLarge, color = Color.White)
+            } else {
+                Text(
+                    chips.text,
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = Color.White,
+                    onTextLayout = { layout = it },
+                    modifier = Modifier.pointerInput(text) {
+                        detectTapGestures(
+                            onLongPress = {
+                                clipboard.setText(AnnotatedString(text))
+                                Toast.makeText(context, "已复制", Toast.LENGTH_SHORT).show()
+                            },
+                            onTap = { position ->
+                                val visual = layout?.getOffsetForPosition(position) ?: return@detectTapGestures
+                                val path = chips.chips.firstOrNull { visual in it.start until it.end }?.path ?: return@detectTapGestures
+                                onOpen(path)
+                            },
+                        )
+                    },
+                )
+            }
         }
     }
 }
@@ -956,9 +1059,10 @@ private fun replyText(text: String, entries: List<AppEntry>, onOpenPath: (PathSp
 @Composable
 private fun Composer(
     draft: String,
-    onDraft: (String) -> Unit,
-    attachments: List<ChatAttachment>,
-    onRemove: (String) -> Unit,
+    cursor: Int,
+    onDraft: (String, Int) -> Unit,
+    pendingLabels: Map<String, String>,
+    onOpenPath: (String) -> Unit,
     onPickImage: () -> Unit,
     onPickFile: () -> Unit,
     picking: Boolean,
@@ -980,42 +1084,6 @@ private fun Composer(
             .windowInsetsPadding(WindowInsets.ime.union(WindowInsets.navigationBars)),
     ) {
         Box(Modifier.fillMaxWidth().height(1.dp).background(Hairline))
-        if (attachments.isNotEmpty()) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState())
-                    .padding(start = 12.dp, end = 12.dp, top = 8.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                attachments.forEach { file ->
-                    Row(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(14.dp))
-                            .background(Fog)
-                            .padding(start = 10.dp, end = 2.dp, top = 2.dp, bottom = 2.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            attachmentLabel(file),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = if (file.failed && file.hold.isNullOrBlank() && file.landed.isNullOrBlank()) Coral else Ink,
-                            modifier = Modifier.widthIn(max = 180.dp),
-                        )
-                        Box(
-                            modifier = Modifier
-                                .size(28.dp)
-                                .clickable(enabled = !busy, onClick = { onRemove(file.id) }),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Icon(Icons.Outlined.Close, contentDescription = "去掉", tint = SlateLight, modifier = Modifier.size(14.dp))
-                        }
-                    }
-                }
-            }
-        }
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -1061,15 +1129,43 @@ private fun Composer(
                 if (draft.isEmpty()) {
                     Text(placeholder, style = MaterialTheme.typography.bodyLarge, color = SlateLight)
                 }
+                val chipHolder = remember { ChipHolder() }
+                var layout by remember { mutableStateOf<TextLayoutResult?>(null) }
                 BasicTextField(
-                    value = draft,
-                    onValueChange = { onDraft(it.take(4000)) },
+                    value = TextFieldValue(draft, TextRange(cursor.coerceIn(0, draft.length))),
+                    onValueChange = { next ->
+                        val limited = next.text.take(4000)
+                        val coerced = coerceAttachmentTokens(draft, limited)
+                        val removed = limited.length - coerced.length
+                        onDraft(coerced, (next.selection.end - removed).coerceIn(0, coerced.length))
+                    },
                     enabled = fieldEnabled,
                     textStyle = MaterialTheme.typography.bodyLarge.copy(color = Ink),
                     cursorBrush = SolidColor(Pine),
+                    visualTransformation = AttachmentChipTransformation(pendingLabels, chipHolder),
+                    onTextLayout = { layout = it },
                     maxLines = 6,
                     modifier = Modifier.fillMaxWidth(),
                 )
+                val density = LocalDensity.current
+                val result = layout
+                if (result != null) {
+                    chipHolder.chips.forEach { chip ->
+                        val end = chip.end - 1
+                        if (chip.start < 0 || end < chip.start) return@forEach
+                        val first = runCatching { result.getBoundingBox(chip.start) }.getOrNull() ?: return@forEach
+                        val last = runCatching { result.getBoundingBox(end) }.getOrNull() ?: first
+                        Box(
+                            modifier = Modifier
+                                .offset { IntOffset(first.left.toInt(), first.top.toInt()) }
+                                .size(
+                                    width = with(density) { (last.right - first.left).coerceAtLeast(1f).toDp() },
+                                    height = with(density) { first.height.coerceAtLeast(1f).toDp() },
+                                )
+                                .clickable { onOpenPath(chip.path) },
+                        )
+                    }
+                }
             }
             Spacer(Modifier.width(10.dp))
             Box(
@@ -1130,48 +1226,58 @@ private fun takeAttachment(
     scope: kotlinx.coroutines.CoroutineScope,
     uri: Uri?,
     kind: String,
-    attachments: SnapshotStateList<ChatAttachment>,
+    count: () -> Int,
     desk: AppDesk,
     linkId: String,
     controller: RemoteController,
+    onInsert: (ChatAttachment) -> Boolean,
+    onUpdate: (ChatAttachment) -> Unit,
+    onRemove: (String) -> Unit,
 ) {
     if (uri == null) return
-    if (attachments.size >= ATTACHMENT_COUNT) {
+    if (count() >= ATTACHMENT_COUNT) {
         desk.notice = "一次最多带 10 个文件"
         return
     }
     val resolver = context.contentResolver
     scope.launch {
-        val read = withContext(Dispatchers.IO) { readChatAttachment(resolver, uri, kind) }
-        when (read) {
-            is AttachmentRead.Failed -> desk.notice = read.message
-            is AttachmentRead.Ready -> {
-                if (attachments.size >= ATTACHMENT_COUNT) desk.notice = "一次最多带 10 个文件"
-                else {
-                    attachments.add(read.file)
-                    controller.beginAttachment(linkId, read.file) { updated ->
-                        val index = attachments.indexOfFirst { it.id == updated.id }
-                        if (index >= 0) attachments[index] = updated
-                    }
-                }
+        val name = withContext(Dispatchers.IO) { attachmentDisplayName(resolver, uri, kind) }
+        if (count() >= ATTACHMENT_COUNT) {
+            desk.notice = "一次最多带 10 个文件"
+            return@launch
+        }
+        val file = ChatAttachment(UUID.randomUUID().toString(), name, kind, ByteArray(0))
+        if (!onInsert(file)) return@launch
+        when (val read = withContext(Dispatchers.IO) { readAttachmentBytes(resolver, uri) }) {
+            is AttachmentBytes.Failed -> {
+                onRemove(file.id)
+                desk.notice = read.message
+            }
+            is AttachmentBytes.Ready -> {
+                val ready = file.copy(bytes = read.bytes)
+                onUpdate(ready)
+                controller.beginAttachment(linkId, ready) { onUpdate(it) }
             }
         }
     }
 }
 
-private sealed class AttachmentRead {
-    data class Ready(val file: ChatAttachment) : AttachmentRead()
-    data class Failed(val message: String) : AttachmentRead()
+private sealed class AttachmentBytes {
+    data class Ready(val bytes: ByteArray) : AttachmentBytes()
+    data class Failed(val message: String) : AttachmentBytes()
 }
 
-private fun readChatAttachment(resolver: ContentResolver, uri: Uri, kind: String): AttachmentRead {
+private fun attachmentDisplayName(resolver: ContentResolver, uri: Uri, kind: String): String {
+    val fallback = if (kind == "image") "图片.jpg" else "附件"
+    val queried = resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+        if (!cursor.moveToFirst()) null else cursor.getString(0)
+    }
+    return attachmentFileName(queried ?: uri.lastPathSegment.orEmpty(), fallback)
+}
+
+private fun readAttachmentBytes(resolver: ContentResolver, uri: Uri): AttachmentBytes {
     return try {
-        val fallback = if (kind == "image") "图片.jpg" else "附件"
-        val queried = resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
-            if (!cursor.moveToFirst()) null else cursor.getString(0)
-        }
-        val name = attachmentFileName(queried ?: uri.lastPathSegment.orEmpty(), fallback)
-        val stream = resolver.openInputStream(uri) ?: return AttachmentRead.Failed("这个文件读不了")
+        val stream = resolver.openInputStream(uri) ?: return AttachmentBytes.Failed("这个文件读不了")
         stream.use { input ->
             val output = ByteArrayOutputStream()
             val chunk = ByteArray(16 * 1024)
@@ -1180,13 +1286,115 @@ private fun readChatAttachment(resolver: ContentResolver, uri: Uri, kind: String
                 val count = input.read(chunk)
                 if (count < 0) break
                 total += count
-                if (total > ATTACHMENT_BYTE_LIMIT) return AttachmentRead.Failed("单个文件不能超过 20MB")
+                if (total > ATTACHMENT_BYTE_LIMIT) return AttachmentBytes.Failed("单个文件不能超过 20MB")
                 output.write(chunk, 0, count)
             }
-            if (total == 0) return AttachmentRead.Failed("这个文件是空的")
-            AttachmentRead.Ready(ChatAttachment(UUID.randomUUID().toString(), name, kind, output.toByteArray()))
+            if (total == 0) return AttachmentBytes.Failed("这个文件是空的")
+            AttachmentBytes.Ready(output.toByteArray())
         }
     } catch (_: Exception) {
-        AttachmentRead.Failed("这个文件读不了")
+        AttachmentBytes.Failed("这个文件读不了")
+    }
+}
+
+private data class VisualChip(val start: Int, val end: Int, val path: String)
+
+private data class UserChipText(val text: AnnotatedString, val chips: List<VisualChip>)
+
+private fun userChipText(raw: String): UserChipText? {
+    val spans = attachmentSpans(raw).filter { !it.path.isNullOrBlank() }
+    if (spans.isEmpty()) return null
+    val chips = mutableListOf<VisualChip>()
+    val annotated = buildAnnotatedString {
+        var cursor = 0
+        for (span in spans) {
+            val path = span.path ?: continue
+            append(raw.substring(cursor, span.start))
+            val start = length
+            pushStyle(SpanStyle(background = Color.White, color = Pine, fontWeight = FontWeight.Medium))
+            append(path.substringAfterLast('/'))
+            pop()
+            chips.add(VisualChip(start, length, path))
+            cursor = span.end
+        }
+        append(raw.substring(cursor))
+    }
+    return UserChipText(annotated, chips)
+}
+
+private class ChipHolder {
+    var mapping: OffsetMapping = OffsetMapping.Identity
+    var chips: List<VisualChip> = emptyList()
+}
+
+private class ChipOffsetMapping(
+    private val originalTo: IntArray,
+    private val visualTo: IntArray,
+) : OffsetMapping {
+    override fun originalToTransformed(offset: Int): Int =
+        originalTo[offset.coerceIn(0, originalTo.lastIndex)]
+
+    override fun transformedToOriginal(offset: Int): Int =
+        visualTo[offset.coerceIn(0, visualTo.lastIndex)]
+}
+
+private class AttachmentChipTransformation(
+    private val labels: Map<String, String>,
+    private val holder: ChipHolder,
+) : VisualTransformation {
+    override fun filter(text: AnnotatedString): TransformedText {
+        val raw = text.text
+        val spans = attachmentSpans(raw)
+        if (spans.isEmpty()) {
+            holder.mapping = OffsetMapping.Identity
+            holder.chips = emptyList()
+            return TransformedText(text, OffsetMapping.Identity)
+        }
+        val builder = AnnotatedString.Builder()
+        val originalTo = IntArray(raw.length + 1)
+        val visualTo = mutableListOf<Int>()
+        val chips = mutableListOf<VisualChip>()
+        var index = 0
+        for (span in spans) {
+            while (index < span.start) {
+                originalTo[index] = builder.length
+                visualTo.add(index)
+                builder.append(raw[index])
+                index++
+            }
+            val label = if (span.provisionalId != null) {
+                labels[span.provisionalId].orEmpty().ifBlank { "上传中" }
+            } else {
+                span.path.orEmpty().substringAfterLast('/').ifBlank { "文件" }
+            }
+            val visualStart = builder.length
+            builder.pushStyle(
+                SpanStyle(
+                    background = Color.White,
+                    color = if (label.contains("没传上")) Coral else Pine,
+                    fontWeight = FontWeight.Medium,
+                ),
+            )
+            builder.append(label)
+            builder.pop()
+            for (offset in span.start until span.end) originalTo[offset] = visualStart
+            val half = label.length / 2
+            for (glyph in label.indices) visualTo.add(if (glyph < half) span.start else span.end)
+            val path = span.path
+            if (!path.isNullOrBlank() && label.isNotEmpty()) chips.add(VisualChip(visualStart, visualStart + label.length, path))
+            index = span.end
+        }
+        while (index < raw.length) {
+            originalTo[index] = builder.length
+            visualTo.add(index)
+            builder.append(raw[index])
+            index++
+        }
+        originalTo[raw.length] = builder.length
+        visualTo.add(raw.length)
+        val mapping = ChipOffsetMapping(originalTo, visualTo.toIntArray())
+        holder.mapping = mapping
+        holder.chips = chips
+        return TransformedText(builder.toAnnotatedString(), mapping)
     }
 }

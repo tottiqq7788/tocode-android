@@ -84,6 +84,7 @@ data class ChatAttachment(
     val bytes: ByteArray,
     val landed: String? = null,
     val hold: String? = null,
+    val reserved: String? = null,
     val failed: Boolean = false,
 )
 
@@ -99,8 +100,131 @@ fun attachmentLabel(file: ChatAttachment): String = when (attachmentTransfer(fil
     else -> if (file.failed) "${file.name} · 没传上" else "${file.name} · 上传中"
 }
 
-fun attachmentAfterHold(file: ChatAttachment, hold: String): ChatAttachment =
-    file.copy(hold = hold, bytes = ByteArray(0), failed = false)
+fun attachmentAfterHold(file: ChatAttachment, hold: String, path: String? = null): ChatAttachment =
+    file.copy(hold = hold, reserved = path?.takeIf { it.isNotBlank() }, bytes = ByteArray(0), failed = false)
+
+fun provisionalToken(id: String) = "@暂存:$id"
+
+fun attachmentMention(path: String) = "@$path"
+
+data class AttachmentSpan(
+    val start: Int,
+    val end: Int,
+    val path: String?,
+    val provisionalId: String?,
+)
+
+private val provisionalIdPattern = Regex("[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}")
+
+private val attachmentExtensions = setOf(
+    "jpeg", "webp", "heif", "heic", "docx", "xlsx", "pptx", "tiff", "html", "json",
+    "jpg", "png", "gif", "pdf", "txt", "zip", "csv", "xml", "svg", "bmp", "tif",
+    "mp3", "mp4", "mov", "wav", "doc", "xls", "ppt", "apk", "dmg", "log", "md", "gz",
+)
+
+/** 句子里的 @相对路径。没有 @ 的旧行不会变成小块。 */
+fun attachmentSpans(text: String): List<AttachmentSpan> {
+    val found = mutableListOf<AttachmentSpan>()
+    var index = 0
+    while (index < text.length) {
+        if (text.startsWith("@暂存:", index)) {
+            val idStart = index + "@暂存:".length
+            val match = provisionalIdPattern.find(text, idStart)
+            if (match != null && match.range.first == idStart) {
+                found.add(AttachmentSpan(index, match.range.last + 1, null, match.value))
+                index = match.range.last + 1
+                continue
+            }
+        }
+        val folder = when {
+            text.startsWith("@对话附件-图片/", index) -> "对话附件-图片"
+            text.startsWith("@对话附件-文件/", index) -> "对话附件-文件"
+            else -> null
+        }
+        if (folder != null) {
+            val nameStart = index + "@$folder/".length
+            val nameEnd = attachmentNameEnd(text, nameStart)
+            if (nameEnd > nameStart) {
+                found.add(AttachmentSpan(index, nameEnd, text.substring(index + 1, nameEnd), null))
+                index = nameEnd
+                continue
+            }
+        }
+        index++
+    }
+    return found
+}
+
+fun referencedAttachmentPaths(text: String): Set<String> =
+    attachmentSpans(text).mapNotNull { it.path }.toSet()
+
+/** 改掉 @路径 里的任何一个字，整段一起去掉。完整替换整段则保留用户输入。 */
+fun coerceAttachmentTokens(before: String, after: String): String {
+    if (before == after) return after
+    val tokens = attachmentSpans(before)
+    if (tokens.isEmpty()) return after
+    var prefix = 0
+    val limit = minOf(before.length, after.length)
+    while (prefix < limit && before[prefix] == after[prefix]) prefix++
+    var suffix = 0
+    while (
+        suffix < before.length - prefix &&
+        suffix < after.length - prefix &&
+        before[before.length - 1 - suffix] == after[after.length - 1 - suffix]
+    ) suffix++
+    val deleteStart = prefix
+    val deleteEnd = before.length - suffix
+    val insert = after.substring(prefix, after.length - suffix)
+    val partial = tokens.filter { token ->
+        val caretInside = deleteStart == deleteEnd && deleteStart > token.start && deleteStart < token.end
+        val overlaps = deleteStart < token.end && deleteEnd > token.start
+        val covered = deleteStart <= token.start && deleteEnd >= token.end
+        (overlaps || caretInside) && !covered
+    }
+    if (partial.isEmpty()) return after
+    val start = minOf(deleteStart, partial.minOf { it.start })
+    val end = maxOf(deleteEnd, partial.maxOf { it.end })
+    val inside = partial.any { deleteStart >= it.start && deleteEnd <= it.end }
+    val replacement = if (inside) "" else insert
+    return before.substring(0, start) + replacement + before.substring(end)
+}
+
+private fun attachmentNameEnd(text: String, start: Int): Int {
+    var index = start
+    var sawCjk = false
+    while (index < text.length && index - start < 255) {
+        val ch = text[index]
+        if (isAttachmentBoundary(ch)) break
+        if (isCjk(ch) && !sawCjk && isAsciiName(text, start, index)) break
+        if (isCjk(ch)) sawCjk = true
+        index++
+        if (hasAttachmentExtension(text, start, index)) {
+            val next = text.getOrNull(index)
+            if (next == null || isAttachmentBoundary(next) || isCjk(next)) return index
+        }
+    }
+    return index
+}
+
+private fun isAsciiName(text: String, start: Int, end: Int): Boolean {
+    if (end <= start) return false
+    return (start until end).all { text[it].code < 128 }
+}
+
+private fun hasAttachmentExtension(text: String, start: Int, end: Int): Boolean {
+    val slice = text.substring(start, end)
+    val dot = slice.lastIndexOf('.')
+    if (dot <= 0) return false
+    return slice.substring(dot + 1).lowercase() in attachmentExtensions
+}
+
+private fun isCjk(ch: Char): Boolean {
+    val code = ch.code
+    return code in 0x3400..0x9FFF || code in 0xF900..0xFAFF
+}
+
+private fun isAttachmentBoundary(ch: Char): Boolean =
+    ch.isWhitespace() || ch == '@' || ch == '/' || ch.code < 32 || ch in "，。？！、；：,!?;:()（）【】[]「」《》<>"
 
 fun attachmentFileName(display: String, fallback: String): String {
     val name = display.trim()
