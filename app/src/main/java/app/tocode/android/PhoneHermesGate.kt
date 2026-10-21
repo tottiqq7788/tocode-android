@@ -40,6 +40,76 @@ fun chatBlocks(turns: List<AppTurn>): List<ChatBlock> {
     return blocks
 }
 
+data class Exchange(val blocks: List<ChatBlock>)
+
+/** 一次提问，加上它后面的过程回复和结束回复，算一页。 */
+fun exchanges(blocks: List<ChatBlock>): List<Exchange> {
+    if (blocks.isEmpty()) return emptyList()
+    val pages = mutableListOf<MutableList<ChatBlock>>()
+    for (block in blocks) {
+        if (block is ChatBlock.User || pages.isEmpty()) {
+            pages.add(mutableListOf(block))
+        } else {
+            pages.last().add(block)
+        }
+    }
+    return pages.map { Exchange(it.toList()) }
+}
+
+/** `pinned` 为空时停在最后一页。看较早的一页时，新回复不改变这个下标。 */
+fun visibleExchange(count: Int, pinned: Int?): Int {
+    if (count <= 0) return -1
+    val chosen = pinned ?: return count - 1
+    return chosen.coerceIn(0, count - 1)
+}
+
+/** 翻到最后一页时返回空，表示继续跟着最新一次。 */
+fun pagerTarget(count: Int, index: Int, forward: Boolean): Int? {
+    if (count <= 0 || index !in 0 until count) return null
+    val next = if (forward) index + 1 else index - 1
+    if (next !in 0 until count) return if (index == count - 1) null else index
+    return if (next == count - 1) null else next
+}
+
+const val ATTACHMENT_BYTE_LIMIT = 20 * 1024 * 1024
+const val ATTACHMENT_COUNT = 10
+
+data class ChatAttachment(
+    val id: String,
+    val name: String,
+    val kind: String,
+    val bytes: ByteArray,
+    val landed: String? = null,
+)
+
+fun attachmentFileName(display: String, fallback: String): String {
+    val name = display.trim()
+    val usable = name.isNotEmpty() && name.length <= 255 &&
+        !name.contains('/') && !name.contains('\\') &&
+        name != "." && name != ".." &&
+        name.none { it.code == 0 || it.code < 32 }
+    return if (usable) name else fallback
+}
+
+fun hermesTextWithPaths(text: String, paths: List<String>, limit: Int = 8000): String? {
+    val body = text.trim()
+    val lines = paths.map { it.trim() }.filter { it.isNotEmpty() }
+    val combined = when {
+        lines.isEmpty() -> body
+        body.isEmpty() -> lines.joinToString("\n")
+        else -> body + "\n\n" + lines.joinToString("\n")
+    }
+    if (combined.isEmpty() || combined.length > limit) return null
+    return combined
+}
+
+fun landedAttachments(files: List<ChatAttachment>, paths: List<String?>): List<ChatAttachment> {
+    return files.mapIndexed { index, file ->
+        val path = paths.getOrNull(index)
+        if (path.isNullOrBlank()) file else file.copy(landed = path, bytes = ByteArray(0))
+    }
+}
+
 data class AppEntry(val path: String, val name: String, val kind: String)
 
 data class AppPreview(

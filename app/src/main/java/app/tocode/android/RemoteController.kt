@@ -8,6 +8,7 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import okhttp3.WebSocket
+import okio.ByteString.Companion.toByteString
 import org.json.JSONObject
 import java.util.UUID
 import java.util.concurrent.Executors
@@ -62,6 +63,8 @@ private data class AppWait(
     val offset: Int = 0,
 )
 
+private data class FileWait(val linkId: String, val callback: (String?) -> Unit)
+
 class RemoteController(
     private val directory: LinkDirectory,
     private val disk: LinkDisk,
@@ -87,6 +90,8 @@ class RemoteController(
     val desktopNotice = mutableStateMapOf<String, String>()
     private val desks = linkedMapOf<String, AppDesk>()
     private val appWait = linkedMapOf<String, AppWait>()
+    private val fileWait = linkedMapOf<String, FileWait>()
+    private val attachmentBusy = mutableSetOf<String>()
     private val sockets = linkedMapOf<String, WebSocket>()
     private val retryDelay = linkedMapOf<String, Long>()
     private val statusRetry = mutableSetOf<String>()
@@ -336,6 +341,108 @@ class RemoteController(
         desk.notice = ""
         watchRunning(id)
         return true
+    }
+
+    fun sendWithAttachments(
+        id: String,
+        text: String,
+        files: List<ChatAttachment>,
+        onFinished: (Boolean, List<String?>) -> Unit,
+    ): Boolean {
+        val desk = desk(id)
+        if (desk.sending || !attachmentBusy.add(id)) return false
+        if (!desk.canChat) {
+            attachmentBusy.remove(id)
+            desk.notice = hermesClosedText(desk)
+            return false
+        }
+        if (desk.openSession == null || desk.openProject == null) {
+            attachmentBusy.remove(id)
+            return false
+        }
+        if (files.isEmpty()) {
+            attachmentBusy.remove(id)
+            onFinished(sendChat(id, text), emptyList())
+            return true
+        }
+        uploadAt(id, text, files, 0, MutableList(files.size) { files[it].landed }, onFinished)
+        return true
+    }
+
+    private fun uploadAt(
+        id: String,
+        text: String,
+        files: List<ChatAttachment>,
+        index: Int,
+        paths: MutableList<String?>,
+        onFinished: (Boolean, List<String?>) -> Unit,
+    ) {
+        if (index >= files.size) {
+            attachmentBusy.remove(id)
+            val ready = paths.mapNotNull { it?.takeIf(String::isNotBlank) }
+            if (ready.size != files.size) {
+                onFinished(false, paths.toList())
+                return
+            }
+            val composed = hermesTextWithPaths(text, ready)
+            if (composed == null) {
+                desk(id).notice = "附上的路径太长了"
+                onFinished(false, paths.toList())
+                return
+            }
+            onFinished(sendChat(id, composed), paths.toList())
+            return
+        }
+        if (!paths[index].isNullOrBlank()) {
+            uploadAt(id, text, files, index + 1, paths, onFinished)
+            return
+        }
+        sendProjectFile(id, files[index]) { saved ->
+            if (saved.isNullOrBlank()) {
+                attachmentBusy.remove(id)
+                onFinished(false, paths.toList())
+                return@sendProjectFile
+            }
+            paths[index] = saved
+            uploadAt(id, text, files, index + 1, paths, onFinished)
+        }
+    }
+
+    private fun sendProjectFile(id: String, file: ChatAttachment, onResult: (String?) -> Unit) {
+        val socket = sockets[id]
+        val project = desk(id).openProject
+        if (socket == null || online[id] != true || project == null) {
+            desk(id).notice = "这台 Mac 还没连上，正在重连…"
+            onResult(null)
+            return
+        }
+        if (file.bytes.isEmpty()) {
+            desk(id).notice = "这个文件是空的"
+            onResult(null)
+            return
+        }
+        val requestId = UUID.randomUUID().toString()
+        fileWait[requestId] = FileWait(id, onResult)
+        val body = JSONObject()
+            .put("op", "project_file")
+            .put("request_id", requestId)
+            .put("name", file.name)
+            .put("size", file.bytes.size)
+            .put("kind", file.kind)
+            .put("profile", desk(id).profile)
+            .put("project_id", project.id)
+        val queued = socket.send(body.toString()) && socket.send(file.bytes.toByteString())
+        if (!queued) {
+            fileWait.remove(requestId)
+            desk(id).notice = "文件没有送出去"
+            onResult(null)
+            return
+        }
+        main.postDelayed({
+            val wait = fileWait.remove(requestId) ?: return@postDelayed
+            desk(wait.linkId).notice = "文件没有保存成功"
+            wait.callback(null)
+        }, FILE_TIMEOUT_MS)
     }
 
     fun refreshApp(id: String) {
@@ -655,6 +762,11 @@ class RemoteController(
             appWait.remove(requestId)
             failApp(wait, requestId, "和这台 Mac 的连接断开了")
         }
+        val lostFiles = fileWait.filterValues { it.linkId == linkId }.keys.toList()
+        lostFiles.forEach { requestId ->
+            fileWait.remove(requestId)?.callback?.invoke(null)
+        }
+        if (lostFiles.isNotEmpty()) desk(linkId).notice = "和这台 Mac 的连接断开了"
         followUp.remove(linkId)
         pressedButton.remove(linkId)
         if (pending.remove(linkId) != null) {
@@ -668,6 +780,17 @@ class RemoteController(
         when (message.optString("op")) {
             "ready" -> refreshApp(linkId)
             "app_result" -> applyApp(linkId, message)
+            "project_file_result" -> {
+                val requestId = message.optString("request_id")
+                val wait = fileWait.remove(requestId) ?: return
+                val path = message.optString("path")
+                if (message.optBoolean("ok") && path.isNotBlank()) {
+                    wait.callback(path)
+                } else {
+                    desk(wait.linkId).notice = message.optString("text").ifBlank { "文件没有保存成功" }
+                    wait.callback(null)
+                }
+            }
             "result" -> {
                 val requestId = message.optString("request_id")
                 if (requestId.isNotBlank() && pending[linkId] != requestId) return
@@ -704,6 +827,13 @@ class RemoteController(
             "error" -> {
                 val requestId = message.optString("request_id")
                 val text = message.optString("message").ifBlank { "失败" }
+                val file = if (requestId.isNotBlank()) fileWait.remove(requestId) else null
+                if (file != null) {
+                    desk(file.linkId).notice = text
+                    file.callback(null)
+                    return
+                }
+                if (requestId.isBlank()) return
                 val wait = appWait.remove(requestId)
                 if (wait != null) {
                     failApp(wait, requestId, text)
@@ -979,6 +1109,7 @@ class RemoteController(
     private companion object {
         const val COMMAND_TIMEOUT_MS = 20_000L
         const val APP_TIMEOUT_MS = 30_000L
+        const val FILE_TIMEOUT_MS = 120_000L
         const val CHAT_TIMEOUT_MS = 11 * 60_000L
         const val RUN_POLL_MS = 3_000L
         const val RETRY_START_MS = 2_000L

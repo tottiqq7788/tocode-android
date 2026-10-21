@@ -1,7 +1,14 @@
 package app.tocode.android
 
+import android.content.ContentResolver
+import android.content.Context
+import android.net.Uri
+import android.provider.OpenableColumns
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -46,9 +53,11 @@ import androidx.compose.material.icons.automirrored.outlined.Send
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.AttachFile
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material.icons.outlined.CloudOff
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.Tune
@@ -64,10 +73,13 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -88,6 +100,11 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.ByteArrayOutputStream
+import java.util.UUID
 
 @Composable
 fun SessionsTab(
@@ -384,6 +401,9 @@ private val suggestions = listOf(
 @Composable
 fun ChatScreen(controller: RemoteController, link: AppLink, desk: AppDesk, session: AppSession) {
     var draft by rememberSaveable(session.id) { mutableStateOf("") }
+    val attachments = remember(session.id) { mutableStateListOf<ChatAttachment>() }
+    var uploading by remember(session.id) { mutableStateOf(false) }
+    var pinned by remember(session.id) { mutableStateOf<Int?>(null) }
     val restore = desk.restoreDraft
     LaunchedEffect(restore) {
         if (restore.isNotEmpty()) {
@@ -392,6 +412,17 @@ fun ChatScreen(controller: RemoteController, link: AppLink, desk: AppDesk, sessi
         }
     }
     val online = controller.online[link.id]
+    val pages = exchanges(chatBlocks(desk.turns))
+    val pageCount = pages.size
+    val pageIndex = visibleExchange(pageCount, pinned)
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        takeAttachment(context, scope, uri, "image", attachments, desk)
+    }
+    val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        takeAttachment(context, scope, uri, "file", attachments, desk)
+    }
     var confirmDelete by remember { mutableStateOf(false) }
     var managing by remember { mutableStateOf(false) }
     var showFiles by rememberSaveable(session.id) { mutableStateOf(false) }
@@ -418,7 +449,14 @@ fun ChatScreen(controller: RemoteController, link: AppLink, desk: AppDesk, sessi
             when {
                 desk.turnsLoading && desk.turns.isEmpty() -> LoadingState("正在读取对话…", Modifier.align(Alignment.Center))
                 desk.turns.isEmpty() && !desk.sending -> ChatWelcome(onPick = { draft = it })
-                else -> MessageList(desk.openSession?.id ?: "", desk) { span ->
+                else -> MessageList(
+                    sessionID = desk.openSession?.id ?: "",
+                    pageIndex = pageIndex,
+                    blocks = pages.getOrElse(pageIndex) { Exchange(emptyList()) }.blocks,
+                    latest = pageCount == 0 || (pageIndex >= 0 && pageIndex == pageCount - 1),
+                    sending = desk.sending,
+                    entries = desk.entries,
+                ) { span ->
                     if (span.folder) {
                         controller.openDirectory(link.id, span.path)
                         showFiles = true
@@ -432,15 +470,50 @@ fun ChatScreen(controller: RemoteController, link: AppLink, desk: AppDesk, sessi
         Composer(
             draft = draft,
             onDraft = { draft = it },
-            enabled = canSend,
-            sending = desk.sending,
+            attachments = attachments,
+            onRemove = { id -> attachments.removeAll { it.id == id } },
+            onPickImage = {
+                if (attachments.size >= ATTACHMENT_COUNT) desk.notice = "一次最多带 10 个文件"
+                else imagePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+            },
+            onPickFile = {
+                if (attachments.size >= ATTACHMENT_COUNT) desk.notice = "一次最多带 10 个文件"
+                else filePicker.launch(arrayOf("*/*"))
+            },
+            picking = canSend && !uploading,
+            pageLabel = if (pageCount == 0) "" else "${pageIndex + 1}/$pageCount",
+            canBack = pageIndex > 0,
+            canForward = pageCount > 1 && pageIndex < pageCount - 1,
+            onBack = { pinned = pagerTarget(pageCount, pageIndex, forward = false) },
+            onForward = { pinned = pagerTarget(pageCount, pageIndex, forward = true) },
+            fieldEnabled = online == true && desk.canChat && !desk.sending && !uploading,
+            canSubmit = canSend && !uploading && (draft.isNotBlank() || attachments.isNotEmpty()),
+            busy = desk.sending || uploading,
             placeholder = when {
+                uploading -> "正在保存附件…"
                 online != true -> "等待 Mac 连接…"
                 !desk.canChat -> "Hermes 没开"
                 desk.sending -> "Hermes 正在回复…"
                 else -> "给 Hermes 发消息"
             },
-            onSend = { if (controller.sendChat(link.id, draft)) draft = "" },
+            onSend = {
+                if (uploading) return@Composer
+                uploading = true
+                val started = controller.sendWithAttachments(link.id, draft, attachments.toList()) { ok, landed ->
+                    uploading = false
+                    if (ok) {
+                        draft = ""
+                        attachments.clear()
+                        pinned = null
+                    } else {
+                        desk.restoreDraft = ""
+                        val updated = landedAttachments(attachments.toList(), landed)
+                        attachments.clear()
+                        attachments.addAll(updated)
+                    }
+                }
+                if (!started) uploading = false
+            },
         )
     }
         if (showFiles) {
@@ -672,15 +745,23 @@ private fun ChatWelcome(onPick: (String) -> Unit) {
 }
 
 @Composable
-private fun MessageList(sessionID: String, desk: AppDesk, onOpenPath: (PathSpan) -> Unit) {
+private fun MessageList(
+    sessionID: String,
+    pageIndex: Int,
+    blocks: List<ChatBlock>,
+    latest: Boolean,
+    sending: Boolean,
+    entries: List<AppEntry>,
+    onOpenPath: (PathSpan) -> Unit,
+) {
     val listState = rememberLazyListState()
-    val blocks = chatBlocks(desk.turns)
-    val tail = blocks.lastIndex + if (desk.sending) 1 else 0
-    var placed by remember(sessionID) { mutableStateOf(false) }
-    LaunchedEffect(sessionID, desk.turns.size, desk.sending) {
+    val showTyping = latest && sending
+    val tail = blocks.lastIndex + if (showTyping) 1 else 0
+    var placed by remember(sessionID, pageIndex) { mutableStateOf(false) }
+    LaunchedEffect(sessionID, pageIndex, blocks.size, showTyping) {
         if (tail < 0) return@LaunchedEffect
         snapshotFlow { listState.layoutInfo.totalItemsCount }.first { it > tail }
-        listState.scrollToItem(tail)
+        listState.scrollToItem(if (latest) tail else 0)
         placed = true
     }
     LazyColumn(
@@ -689,16 +770,16 @@ private fun MessageList(sessionID: String, desk: AppDesk, onOpenPath: (PathSpan)
         contentPadding = PaddingValues(horizontal = 14.dp, vertical = 16.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        itemsIndexed(blocks, key = { index, _ -> index }) { index, block ->
-            val live = desk.sending && index == blocks.lastIndex && block is ChatBlock.Process
+        itemsIndexed(blocks, key = { index, _ -> "$pageIndex-$index" }) { index, block ->
+            val live = latest && sending && index == blocks.lastIndex && block is ChatBlock.Process
             when (block) {
                 is ChatBlock.User -> UserBubble(block.text)
-                is ChatBlock.Reply -> AssistantBubble(block.text, desk.entries, onOpenPath)
+                is ChatBlock.Reply -> AssistantBubble(block.text, entries, onOpenPath)
                 is ChatBlock.Process -> ProcessBlock(block.lines, live)
             }
         }
-        if (desk.sending) {
-            item(key = "typing") { AssistantBubble(null, emptyList()) {} }
+        if (showTyping) {
+            item(key = "typing-$pageIndex") { AssistantBubble(null, emptyList()) {} }
         }
     }
 }
@@ -856,12 +937,22 @@ private fun replyText(text: String, entries: List<AppEntry>, onOpenPath: (PathSp
 private fun Composer(
     draft: String,
     onDraft: (String) -> Unit,
-    enabled: Boolean,
-    sending: Boolean,
+    attachments: List<ChatAttachment>,
+    onRemove: (String) -> Unit,
+    onPickImage: () -> Unit,
+    onPickFile: () -> Unit,
+    picking: Boolean,
+    pageLabel: String,
+    canBack: Boolean,
+    canForward: Boolean,
+    onBack: () -> Unit,
+    onForward: () -> Unit,
+    fieldEnabled: Boolean,
+    canSubmit: Boolean,
+    busy: Boolean,
     placeholder: String,
     onSend: () -> Unit,
 ) {
-    val canSend = enabled && draft.isNotBlank()
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -869,6 +960,59 @@ private fun Composer(
             .windowInsetsPadding(WindowInsets.ime.union(WindowInsets.navigationBars)),
     ) {
         Box(Modifier.fillMaxWidth().height(1.dp).background(Hairline))
+        if (attachments.isNotEmpty()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
+                    .padding(start = 12.dp, end = 12.dp, top = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                attachments.forEach { file ->
+                    Row(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(Fog)
+                            .padding(start = 10.dp, end = 2.dp, top = 2.dp, bottom = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            file.name,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Ink,
+                            modifier = Modifier.widthIn(max = 160.dp),
+                        )
+                        Box(
+                            modifier = Modifier
+                                .size(28.dp)
+                                .clickable(enabled = !busy, onClick = { onRemove(file.id) }),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(Icons.Outlined.Close, contentDescription = "去掉", tint = SlateLight, modifier = Modifier.size(14.dp))
+                        }
+                    }
+                }
+            }
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            ToolButton(Icons.Outlined.Image, "图片", picking, onPickImage)
+            ToolButton(Icons.Outlined.AttachFile, "附件", picking, onPickFile)
+            Spacer(Modifier.weight(1f))
+            PageArrow("<", canBack, onBack)
+            Text(
+                pageLabel,
+                color = Ink,
+                style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.widthIn(min = 36.dp),
+                textAlign = TextAlign.Center,
+            )
+            PageArrow(">", canForward, onForward)
+        }
         Row(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
             verticalAlignment = Alignment.Bottom,
@@ -886,6 +1030,7 @@ private fun Composer(
                 BasicTextField(
                     value = draft,
                     onValueChange = { onDraft(it.take(4000)) },
+                    enabled = fieldEnabled,
                     textStyle = MaterialTheme.typography.bodyLarge.copy(color = Ink),
                     cursorBrush = SolidColor(Pine),
                     maxLines = 6,
@@ -897,21 +1042,107 @@ private fun Composer(
                 modifier = Modifier
                     .size(46.dp)
                     .clip(CircleShape)
-                    .background(if (canSend) Pine else Hairline)
-                    .clickable(enabled = canSend, onClick = onSend),
+                    .background(if (canSubmit) Pine else Hairline)
+                    .clickable(enabled = canSubmit, onClick = onSend),
                 contentAlignment = Alignment.Center,
             ) {
-                if (sending) {
+                if (busy) {
                     CircularProgressIndicator(color = Pine, strokeWidth = 2.dp, modifier = Modifier.size(20.dp))
                 } else {
                     Icon(
                         Icons.AutoMirrored.Outlined.Send,
                         contentDescription = "发送",
-                        tint = if (canSend) Color.White else SlateLight,
+                        tint = if (canSubmit) Color.White else SlateLight,
                         modifier = Modifier.size(20.dp),
                     )
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun ToolButton(icon: ImageVector, label: String, enabled: Boolean, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(16.dp))
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(horizontal = 8.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(icon, contentDescription = label, tint = if (enabled) Pine else SlateLight, modifier = Modifier.size(18.dp))
+        Spacer(Modifier.width(4.dp))
+        Text(label, color = if (enabled) Ink else SlateLight, style = MaterialTheme.typography.bodyMedium)
+    }
+}
+
+@Composable
+private fun PageArrow(label: String, enabled: Boolean, onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .size(32.dp)
+            .clip(CircleShape)
+            .clickable(enabled = enabled, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(label, color = if (enabled) Ink else SlateLight, style = MaterialTheme.typography.titleMedium)
+    }
+}
+
+private fun takeAttachment(
+    context: Context,
+    scope: kotlinx.coroutines.CoroutineScope,
+    uri: Uri?,
+    kind: String,
+    attachments: SnapshotStateList<ChatAttachment>,
+    desk: AppDesk,
+) {
+    if (uri == null) return
+    if (attachments.size >= ATTACHMENT_COUNT) {
+        desk.notice = "一次最多带 10 个文件"
+        return
+    }
+    val resolver = context.contentResolver
+    scope.launch {
+        val read = withContext(Dispatchers.IO) { readChatAttachment(resolver, uri, kind) }
+        when (read) {
+            is AttachmentRead.Failed -> desk.notice = read.message
+            is AttachmentRead.Ready -> {
+                if (attachments.size >= ATTACHMENT_COUNT) desk.notice = "一次最多带 10 个文件"
+                else attachments.add(read.file)
+            }
+        }
+    }
+}
+
+private sealed class AttachmentRead {
+    data class Ready(val file: ChatAttachment) : AttachmentRead()
+    data class Failed(val message: String) : AttachmentRead()
+}
+
+private fun readChatAttachment(resolver: ContentResolver, uri: Uri, kind: String): AttachmentRead {
+    return try {
+        val fallback = if (kind == "image") "图片.jpg" else "附件"
+        val queried = resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+            if (!cursor.moveToFirst()) null else cursor.getString(0)
+        }
+        val name = attachmentFileName(queried ?: uri.lastPathSegment.orEmpty(), fallback)
+        val stream = resolver.openInputStream(uri) ?: return AttachmentRead.Failed("这个文件读不了")
+        stream.use { input ->
+            val output = ByteArrayOutputStream()
+            val chunk = ByteArray(16 * 1024)
+            var total = 0
+            while (true) {
+                val count = input.read(chunk)
+                if (count < 0) break
+                total += count
+                if (total > ATTACHMENT_BYTE_LIMIT) return AttachmentRead.Failed("单个文件不能超过 20MB")
+                output.write(chunk, 0, count)
+            }
+            if (total == 0) return AttachmentRead.Failed("这个文件是空的")
+            AttachmentRead.Ready(ChatAttachment(UUID.randomUUID().toString(), name, kind, output.toByteArray()))
+        }
+    } catch (_: Exception) {
+        AttachmentRead.Failed("这个文件读不了")
     }
 }

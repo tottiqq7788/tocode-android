@@ -107,6 +107,52 @@ class LinkDirectoryTest {
     }
 
     @Test
+    fun oneQuestionAndItsReplyIsOnePage() {
+        val pages = exchanges(
+            chatBlocks(
+                listOf(
+                    AppTurn("user", "第一问"),
+                    AppTurn("assistant", "先看", interim = true),
+                    AppTurn("assistant", "第一答"),
+                    AppTurn("user", "第二问"),
+                    AppTurn("assistant", "还在写", interim = true),
+                )
+            )
+        )
+        assertEquals(2, pages.size)
+        assertEquals(listOf("第一问"), (pages[0].blocks[0] as ChatBlock.User).let { listOf(it.text) })
+        assertEquals(3, pages[0].blocks.size)
+        assertTrue(pages[0].blocks[1] is ChatBlock.Process)
+        assertTrue(pages[0].blocks[2] is ChatBlock.Reply)
+        assertEquals(2, pages[1].blocks.size)
+        assertEquals(5, visibleExchange(6, null))
+        assertEquals(4, visibleExchange(6, 4))
+        assertEquals(-1, visibleExchange(0, null))
+        assertNull(pagerTarget(6, 4, forward = true))
+        assertEquals(4, pagerTarget(6, 5, forward = false))
+    }
+
+    @Test
+    fun hermesTextAppendsRelativePathsAfterTheFilesLand() {
+        assertEquals(
+            "看一下\n\n对话附件-图片/a.jpg\n对话附件-文件/b.pdf",
+            hermesTextWithPaths("看一下", listOf("对话附件-图片/a.jpg", "对话附件-文件/b.pdf")),
+        )
+        assertEquals("对话附件-文件/b.pdf", hermesTextWithPaths("  ", listOf("对话附件-文件/b.pdf")))
+        assertNull(hermesTextWithPaths("", emptyList()))
+        assertNull(hermesTextWithPaths("看一下", listOf("对话附件-图片/a.jpg"), limit = 4))
+        assertEquals("a.jpg", attachmentFileName("a.jpg", "附件"))
+        assertEquals("附件", attachmentFileName("../a.jpg", "附件"))
+        assertEquals("附件", attachmentFileName("a/b.jpg", "附件"))
+        val marked = landedAttachments(
+            listOf(ChatAttachment("1", "a.jpg", "image", byteArrayOf(1))),
+            listOf("对话附件-图片/a.jpg"),
+        )
+        assertEquals("对话附件-图片/a.jpg", marked[0].landed)
+        assertEquals(0, marked[0].bytes.size)
+    }
+
+    @Test
     fun chatStaysClosedWithoutHermes() {
         assertTrue(chatEntranceClosed(false))
         assertFalse(chatEntranceClosed(true))
