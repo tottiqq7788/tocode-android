@@ -6,10 +6,10 @@ data class AppSession(val id: String, val title: String, val running: Boolean = 
 
 data class AppProject(val id: String, val name: String)
 
-data class AppTurn(val role: String, val text: String, val interim: Boolean = false)
+data class AppTurn(val role: String, val text: String, val interim: Boolean = false, val id: Long = 0)
 
 sealed class ChatBlock {
-    data class User(val text: String) : ChatBlock()
+    data class User(val text: String, val id: Long = 0) : ChatBlock()
     data class Reply(val text: String) : ChatBlock()
     data class Process(val lines: List<String>) : ChatBlock()
 }
@@ -27,7 +27,7 @@ fun chatBlocks(turns: List<AppTurn>): List<ChatBlock> {
         when {
             turn.role == "user" -> {
                 flush()
-                blocks.add(ChatBlock.User(turn.text))
+                blocks.add(ChatBlock.User(turn.text, turn.id))
             }
             turn.interim -> pending.add(turn.text)
             else -> {
@@ -65,6 +65,24 @@ fun visibleExchange(count: Int, pinned: Int?): Int {
 
 fun pageLabel(count: Int, index: Int): String =
     if (count <= 0) "0/0" else "${index + 1}/$count"
+
+fun mergeTurns(existing: List<AppTurn>, incoming: List<AppTurn>): List<AppTurn> {
+    val byId = linkedMapOf<Long, AppTurn>()
+    for (turn in existing) if (turn.id > 0) byId[turn.id] = turn
+    for (turn in incoming) if (turn.id > 0) byId[turn.id] = turn
+    return byId.values.sortedBy { it.id }
+}
+
+fun pageAnchor(page: Exchange): Long? =
+    page.blocks.filterIsInstance<ChatBlock.User>().firstOrNull()?.id?.takeIf { it > 0 }
+
+/** `anchor` 为空时停在最后一页。前面补进旧消息后，仍停在这个用户消息所在的一页。 */
+fun visibleExchangeByAnchor(pages: List<Exchange>, anchor: Long?): Int {
+    if (pages.isEmpty()) return -1
+    if (anchor == null || anchor <= 0L) return pages.lastIndex
+    val index = pages.indexOfFirst { pageAnchor(it) == anchor }
+    return if (index >= 0) index else pages.lastIndex
+}
 
 /** 翻到最后一页时返回空，表示继续跟着最新一次。 */
 fun pagerTarget(count: Int, index: Int, forward: Boolean): Int? {
@@ -404,9 +422,10 @@ fun parseTurns(body: JSONObject): List<AppTurn> {
             val row = rows.optJSONObject(index) ?: continue
             val role = row.optString("role")
             val text = row.optString("text")
-            if (role != "user" && role != "assistant") continue
+            val id = row.optLong("id")
+            if (id <= 0 || (role != "user" && role != "assistant")) continue
             if (role == "assistant" && text.isBlank()) continue
-            add(AppTurn(role, text, row.optBoolean("interim")))
+            add(AppTurn(role, text, row.optBoolean("interim"), id))
         }
     }
 }

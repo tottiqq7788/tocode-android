@@ -36,6 +36,7 @@ class AppDesk {
     var foldersNotice by mutableStateOf("")
     var turns by mutableStateOf<List<AppTurn>>(emptyList())
     var turnsLoading by mutableStateOf(false)
+    var transcripts by mutableStateOf<Map<String, SessionTranscript>>(emptyMap())
     var openSession by mutableStateOf<AppSession?>(null)
     var preview by mutableStateOf<AppPreview?>(null)
     var directoryPath by mutableStateOf("")
@@ -57,6 +58,8 @@ class AppDesk {
     val canChat: Boolean get() = installed == true && running
 }
 
+data class SessionTranscript(val turns: List<AppTurn> = emptyList(), val exhausted: Boolean = false)
+
 private data class AppWait(
     val linkId: String,
     val kind: String,
@@ -64,6 +67,7 @@ private data class AppWait(
     val projectId: String,
     val path: String = "",
     val offset: Int = 0,
+    val cursor: String = "",
 )
 
 private data class FileOutcome(val path: String? = null, val hold: String? = null, val dropped: Boolean = false)
@@ -169,10 +173,7 @@ class RemoteController(
         }
         refreshApp(id)
         val session = desk.openSession
-        if (session != null && session.id.isNotEmpty()) {
-            if (desk.turns.isEmpty()) desk.turnsLoading = true
-            sendApp(id, "messages", sessionId = session.id, profile = desk.profile, projectId = desk.openProject?.id.orEmpty(), quiet = true)
-        }
+        if (session != null && session.id.isNotEmpty()) syncMessages(id, session.id, preferTail = true)
     }
 
     fun openSession(id: String, session: AppSession) {
@@ -181,11 +182,12 @@ class RemoteController(
             desk.notice = "这台电脑没有 Hermes"
             return
         }
+        val saved = desk.transcripts[session.id]
         desk.openSession = session
-        desk.turns = emptyList()
-        desk.turnsLoading = true
+        desk.turns = saved?.turns ?: emptyList()
+        desk.turnsLoading = desk.turns.isEmpty()
         desk.notice = ""
-        sendApp(id, "messages", sessionId = session.id, profile = desk.profile, projectId = desk.openProject?.id.orEmpty())
+        if (session.id.isNotEmpty()) syncMessages(id, session.id, preferTail = true)
         if (session.running || desk.inflight.containsKey(session.id)) watchRunning(id)
     }
 
@@ -879,6 +881,35 @@ class RemoteController(
         loadFolder(id, desk, path, page.next)
     }
 
+    private fun messagesInFlight(linkId: String, sessionId: String): Boolean =
+        appWait.values.any { it.linkId == linkId && it.kind == "messages" && it.sessionId == sessionId }
+
+    private fun syncMessages(linkId: String, sessionId: String, preferTail: Boolean, olderThan: Long? = null) {
+        if (sessionId.isEmpty() || messagesInFlight(linkId, sessionId)) return
+        val desk = desk(linkId)
+        if (desk.openSession?.id != sessionId) return
+        val record = desk.transcripts[sessionId] ?: SessionTranscript()
+        val newest = record.turns.maxOfOrNull { it.id } ?: 0L
+        val oldest = record.turns.minOfOrNull { it.id } ?: 0L
+        val running = desk.inflight.containsKey(sessionId) || desk.openSession?.running == true
+        val cursor = when {
+            record.turns.isEmpty() || preferTail || running -> "tail:$newest"
+            !record.exhausted && olderThan != null && olderThan > 0 -> "older:$olderThan"
+            !record.exhausted && oldest > 0 -> "older:$oldest"
+            else -> return
+        }
+        if (desk.turns.isEmpty()) desk.turnsLoading = true
+        sendApp(
+            linkId,
+            "messages",
+            sessionId = sessionId,
+            profile = desk.profile,
+            projectId = desk.openProject?.id.orEmpty(),
+            cursor = cursor,
+            quiet = true,
+        )
+    }
+
     private val runPolls = mutableSetOf<String>()
 
     private fun watchRunning(linkId: String) {
@@ -889,16 +920,7 @@ class RemoteController(
             val session = desk.openSession?.takeIf { it.id.isNotEmpty() && (desk.inflight.containsKey(it.id) || it.running) }
             val listRunning = desk.openSession == null && (desk.inflight.isNotEmpty() || desk.sessions.any { it.running })
             if (session == null && !listRunning) return@postDelayed
-            if (session != null) {
-                sendApp(
-                    linkId,
-                    "messages",
-                    sessionId = session.id,
-                    profile = desk.profile,
-                    projectId = desk.openProject?.id.orEmpty(),
-                    quiet = true,
-                )
-            }
+            if (session != null) syncMessages(linkId, session.id, preferTail = true)
             if (listRunning) {
                 val project = desk.openProject
                 if (project != null) sendApp(linkId, "sessions", profile = desk.profile, projectId = project.id, quiet = true)
@@ -973,6 +995,7 @@ class RemoteController(
         projectId: String = "",
         path: String = "",
         offset: Int = 0,
+        cursor: String = "",
         quiet: Boolean = false,
     ): String? {
         if (directory.all().none { it.id == id }) return null
@@ -982,7 +1005,7 @@ class RemoteController(
             return null
         }
         val requestId = UUID.randomUUID().toString()
-        appWait[requestId] = AppWait(id, kind, sessionId, projectId, path, offset)
+        appWait[requestId] = AppWait(id, kind, sessionId, projectId, path, offset, cursor)
         val body = JSONObject()
             .put("op", "app")
             .put("request_id", requestId)
@@ -994,6 +1017,7 @@ class RemoteController(
             .put("project_id", projectId)
         if (path.isNotEmpty()) body.put("path", path)
         if (offset > 0) body.put("offset", offset)
+        if (cursor.isNotEmpty()) body.put("cursor", cursor)
         socket.send(body.toString())
         val timeout = if (kind == "chat") CHAT_TIMEOUT_MS else APP_TIMEOUT_MS
         main.postDelayed({
@@ -1205,14 +1229,7 @@ class RemoteController(
                 if (desk.openSession?.id == wait.sessionId) {
                     desk.openSession = desk.openSession?.copy(running = false)
                     desk.pendingText = ""
-                    sendApp(
-                        wait.linkId,
-                        "messages",
-                        sessionId = wait.sessionId,
-                        profile = desk.profile,
-                        projectId = desk.openProject?.id.orEmpty(),
-                        quiet = true,
-                    )
+                    syncMessages(wait.linkId, wait.sessionId, preferTail = true)
                 }
             }
         }
@@ -1334,6 +1351,7 @@ class RemoteController(
                 }
             }
             "session_delete" -> {
+                desk.transcripts = desk.transcripts - wait.sessionId
                 desk.sessions = desk.sessions.filter { it.id != wait.sessionId }
                 applyRunning(dropSession(runningSessions, wait.linkId, wait.sessionId), wait.linkId)
                 if (desk.openSession?.id == wait.sessionId) closeChat(linkId)
@@ -1347,19 +1365,39 @@ class RemoteController(
                     desk.sessions = desk.sessions.map { if (it.id == renamedId) it.copy(title = renamed) else it }
                 }
             }
-            "messages" -> if (desk.openSession?.id == wait.sessionId) {
-                val running = body.optBoolean("running") || desk.inflight.containsKey(wait.sessionId)
-                var turns = parseTurns(body)
-                val pending = desk.pendingText
-                if (running && pending.isNotBlank() && turns.none { it.role == "user" && it.text == pending }) {
-                    turns = turns + AppTurn("user", pending)
+            "messages" -> {
+                val incoming = parseTurns(body)
+                val current = desk.transcripts[wait.sessionId] ?: SessionTranscript()
+                val stored = mergeTurns(current.turns, incoming)
+                val more = body.optBoolean("more")
+                val cursor = wait.cursor.ifBlank { "tail:0" }
+                val exhausted = when {
+                    more -> false
+                    cursor.startsWith("older:") -> true
+                    cursor.startsWith("tail:") && current.turns.isEmpty() -> true
+                    else -> current.exhausted
                 }
-                desk.turns = turns
-                desk.turnsLoading = false
-                desk.openSession = desk.openSession?.copy(running = running)
-                desk.sessions = desk.sessions.map { if (it.id == wait.sessionId) it.copy(running = running) else it }
-                syncOne(linkId, wait.sessionId, desk.openSession?.title.orEmpty(), running = running, online = true)
-                if (running) watchRunning(linkId)
+                val progressed = stored.size > current.turns.size
+                desk.transcripts = desk.transcripts + (wait.sessionId to SessionTranscript(stored, exhausted))
+                if (desk.openSession?.id == wait.sessionId) {
+                    val running = body.optBoolean("running") || desk.inflight.containsKey(wait.sessionId)
+                    val pending = desk.pendingText
+                    var display = stored
+                    if (running && pending.isNotBlank() && display.none { it.role == "user" && it.text == pending }) {
+                        display = display + AppTurn("user", pending)
+                    }
+                    desk.turns = display
+                    desk.turnsLoading = false
+                    desk.openSession = desk.openSession?.copy(running = running)
+                    desk.sessions = desk.sessions.map { if (it.id == wait.sessionId) it.copy(running = running) else it }
+                    syncOne(linkId, wait.sessionId, desk.openSession?.title.orEmpty(), running = running, online = true)
+                    val stall = cursor.startsWith("older:") && !progressed
+                    if (running) watchRunning(linkId)
+                    else if (!stall && (more || !exhausted)) {
+                        val edge = incoming.minOfOrNull { it.id }?.takeIf { more && it > 0 }
+                        syncMessages(linkId, wait.sessionId, preferTail = false, olderThan = edge)
+                    }
+                }
             }
             "chat" -> if (desk.inflight[wait.sessionId] == requestId || desk.chatRequest == requestId) {
                 if (desk.inflight[wait.sessionId] == requestId) desk.inflight = desk.inflight - wait.sessionId
@@ -1380,14 +1418,7 @@ class RemoteController(
                     val open = desk.openSession
                     if (open != null && title.isNotBlank()) desk.openSession = open.copy(title = title, running = false)
                     else desk.openSession = open?.copy(running = false)
-                    sendApp(
-                        linkId,
-                        "messages",
-                        sessionId = wait.sessionId,
-                        profile = desk.profile,
-                        projectId = desk.openProject?.id.orEmpty(),
-                        quiet = true,
-                    )
+                    syncMessages(linkId, wait.sessionId, preferTail = true)
                 }
             }
             "preview" -> {

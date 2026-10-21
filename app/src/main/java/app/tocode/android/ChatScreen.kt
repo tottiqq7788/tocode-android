@@ -443,7 +443,7 @@ fun ChatScreen(controller: RemoteController, link: AppLink, desk: AppDesk, sessi
             attachments.toList().forEach { controller.releaseAttachment(link.id, it) }
         }
     }
-    var pinned by remember(session.id) { mutableStateOf<Int?>(null) }
+    var pinned by remember(session.id) { mutableStateOf<Long?>(null) }
     val restore = desk.restoreDraft
     LaunchedEffect(restore) {
         if (restore.isNotEmpty()) {
@@ -491,7 +491,7 @@ fun ChatScreen(controller: RemoteController, link: AppLink, desk: AppDesk, sessi
     val online = controller.online[link.id]
     val pages = exchanges(chatBlocks(desk.turns))
     val pageCount = pages.size
-    val pageIndex = visibleExchange(pageCount, pinned)
+    val pageIndex = visibleExchangeByAnchor(pages, pinned)
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
@@ -592,8 +592,14 @@ fun ChatScreen(controller: RemoteController, link: AppLink, desk: AppDesk, sessi
             pageLabel = pageLabel(pageCount, pageIndex),
             canBack = pageIndex > 0,
             canForward = pageCount > 1 && pageIndex < pageCount - 1,
-            onBack = { pinned = pagerTarget(pageCount, pageIndex, forward = false) },
-            onForward = { pinned = pagerTarget(pageCount, pageIndex, forward = true) },
+            onBack = {
+                val next = pageIndex - 1
+                pinned = if (next < 0 || next >= pageCount - 1) null else pageAnchor(pages[next])
+            },
+            onForward = {
+                val next = pageIndex + 1
+                pinned = if (next >= pageCount - 1) null else pageAnchor(pages[next])
+            },
             fieldEnabled = online == true && desk.canChat && !desk.sending && !uploading,
             canSubmit = canSend && !uploading && !preparing && draft.isNotBlank(),
             busy = desk.sending || uploading,
