@@ -768,9 +768,9 @@ private fun MessageList(
     val tail = blocks.lastIndex + if (showTyping) 1 else 0
     var placed by remember(sessionID, pageIndex) { mutableStateOf(false) }
     LaunchedEffect(sessionID, pageIndex, blocks.size, showTyping) {
-        if (tail < 0) return@LaunchedEffect
-        snapshotFlow { listState.layoutInfo.totalItemsCount }.first { it > tail }
-        listState.scrollToItem(if (latest) tail else 0)
+        if (placed || tail < 0) return@LaunchedEffect
+        snapshotFlow { listState.layoutInfo.totalItemsCount }.first { it > 0 }
+        listState.scrollToItem(0)
         placed = true
     }
     LazyColumn(
