@@ -30,6 +30,7 @@ class MainActivity : ComponentActivity() {
                 phone = phone,
                 client = RelayClient(),
                 runningStore = RunningSessionStore(File(filesDir, RUNNING_SESSIONS_FILE)),
+                bookmarks = PreviewBookmarkStore(File(filesDir, "preview-bookmarks.json")),
             ).also { shared = it }
         }
         controller.onRunningChanged = { _, finished ->

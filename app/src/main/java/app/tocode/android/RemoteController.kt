@@ -87,6 +87,7 @@ class RemoteController(
     private var phone: PhoneState,
     private val client: RelayClient,
     private val runningStore: RunningSessionStore,
+    private val bookmarks: PreviewBookmarkStore,
     var onRunningChanged: (List<RunningSession>, List<RunningSession>) -> Unit = { _, _ -> },
 ) {
     var scanning by mutableStateOf(false)
@@ -822,6 +823,20 @@ class RemoteController(
         sockets.remove(id)?.close(1000, "unlink")
         forget(id)
         worker.execute { runCatching { client.delete(link) } }
+    }
+
+    fun previewBookmark(id: String, path: String): PreviewBookmark? {
+        val desk = desks[id] ?: return null
+        val project = desk.openProject ?: return null
+        if (path.isBlank()) return null
+        return bookmarks.get(previewBookmarkKey(desk.profile, project.id, path))
+    }
+
+    fun rememberPreviewBookmark(id: String, path: String, scroll: Int, loaded: Int) {
+        val desk = desks[id] ?: return
+        val project = desk.openProject ?: return
+        if (path.isBlank()) return
+        bookmarks.put(previewBookmarkKey(desk.profile, project.id, path), scroll, loaded)
     }
 
     fun openPreview(id: String, entry: AppEntry) {

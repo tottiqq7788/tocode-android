@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -92,9 +93,13 @@ fun RemoteScreen(controller: RemoteController) {
         }
         if (preview != null) {
             BackHandler { controller.closePreview(link.id) }
-            FilePreviewScreen(preview, onBack = { controller.closePreview(link.id) }) {
-                controller.loadMorePreview(link.id)
-            }
+            FilePreviewScreen(
+                preview,
+                controller.previewBookmark(link.id, preview.path),
+                onBack = { controller.closePreview(link.id) },
+                onLoadMore = { controller.loadMorePreview(link.id) },
+                onScroll = { pixels, loaded -> controller.rememberPreviewBookmark(link.id, preview.path, pixels, loaded) },
+            )
         }
     }
 }
@@ -418,8 +423,7 @@ private fun ProjectSheet(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 20.dp)
-                .padding(bottom = 24.dp)
-                .verticalScroll(rememberScrollState()),
+                .padding(bottom = 24.dp),
         ) {
             Text("档案与项目", style = MaterialTheme.typography.titleLarge, color = Ink)
             Spacer(Modifier.height(4.dp))
@@ -434,32 +438,39 @@ private fun ProjectSheet(
             when {
                 !desk.projectsLoaded -> Text("正在读取项目…", style = MaterialTheme.typography.bodyMedium, color = Slate)
                 desk.projects.isEmpty() -> Text("这个档案还没有项目", style = MaterialTheme.typography.bodyMedium, color = Slate)
-                else -> desk.projects.forEach { project ->
-                    val selected = project.id == desk.openProject?.id
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 4.dp)
-                            .clip(RoundedCornerShape(16.dp))
-                            .border(if (selected) 1.5.dp else 1.dp, if (selected) Pine else Hairline, RoundedCornerShape(16.dp))
-                            .clickable {
-                                controller.openProject(link.id, project)
-                                onDismiss()
-                            }
-                            .padding(horizontal = 14.dp, vertical = 13.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Icon(Icons.Outlined.FolderOpen, contentDescription = null, tint = if (selected) Pine else Slate)
-                        Spacer(Modifier.width(12.dp))
-                        Text(
-                            project.name,
-                            style = MaterialTheme.typography.titleMedium,
-                            color = Ink,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f),
-                        )
-                        if (selected) Icon(Icons.Outlined.CheckCircle, contentDescription = "当前", tint = Pine)
+                else -> Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 320.dp)
+                        .verticalScroll(rememberScrollState()),
+                ) {
+                    desk.projects.forEach { project ->
+                        val selected = project.id == desk.openProject?.id
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 4.dp)
+                                .clip(RoundedCornerShape(16.dp))
+                                .border(if (selected) 1.5.dp else 1.dp, if (selected) Pine else Hairline, RoundedCornerShape(16.dp))
+                                .clickable {
+                                    controller.openProject(link.id, project)
+                                    onDismiss()
+                                }
+                                .padding(horizontal = 14.dp, vertical = 13.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(Icons.Outlined.FolderOpen, contentDescription = null, tint = if (selected) Pine else Slate)
+                            Spacer(Modifier.width(12.dp))
+                            Text(
+                                project.name,
+                                style = MaterialTheme.typography.titleMedium,
+                                color = Ink,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f),
+                            )
+                            if (selected) Icon(Icons.Outlined.CheckCircle, contentDescription = "当前", tint = Pine)
+                        }
                     }
                 }
             }

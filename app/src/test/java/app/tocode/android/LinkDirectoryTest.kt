@@ -137,6 +137,20 @@ class LinkDirectoryTest {
     }
 
     @Test
+    fun previewBookmarkStaysWithTheSameProjectFile() {
+        val root = java.io.File(System.getProperty("java.io.tmpdir"), "preview-bookmarks-${java.util.UUID.randomUUID()}")
+        root.mkdirs()
+        val store = PreviewBookmarkStore(java.io.File(root, "preview-bookmarks.json"))
+        val key = previewBookmarkKey("liubei", "p_abc", "章节/001.md")
+        store.put(key, 480, 12000)
+        store.put(key, 0, 0)
+        val again = PreviewBookmarkStore(java.io.File(root, "preview-bookmarks.json"))
+        assertEquals(PreviewBookmark(key, 480, 12000), again.get(key))
+        assertEquals(null, again.get(previewBookmarkKey("default", "p_abc", "章节/001.md")))
+        root.deleteRecursively()
+    }
+
+    @Test
     fun oneQuestionAndItsReplyIsOnePage() {
         val pages = exchanges(
             chatBlocks(

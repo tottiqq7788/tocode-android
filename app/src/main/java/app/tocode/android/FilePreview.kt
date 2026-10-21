@@ -28,10 +28,20 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
-import androidx.compose.runtime.withFrameNanos
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.first
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
+import java.io.File
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
@@ -43,14 +53,55 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
 @Composable
-fun FilePreviewScreen(preview: AppPreview, onBack: () -> Unit, onLoadMore: () -> Unit) {
+fun FilePreviewScreen(
+    preview: AppPreview,
+    bookmark: PreviewBookmark?,
+    onBack: () -> Unit,
+    onLoadMore: () -> Unit,
+    onScroll: (scroll: Int, loaded: Int) -> Unit,
+) {
     val scroll = rememberScrollState()
-    LaunchedEffect(preview.content, preview.truncated, preview.loading, preview.loadingMore, preview.format) {
+    val mark = remember(preview.path) { bookmark }
+    var placed by remember(preview.path) { mutableStateOf(mark == null || mark.scroll <= 0) }
+    LaunchedEffect(
+        preview.path,
+        preview.format,
+        preview.content.length,
+        preview.truncated,
+        preview.loading,
+        preview.loadingMore,
+        preview.notice,
+    ) {
         if (preview.format == "image") return@LaunchedEffect
-        withFrameNanos { }
-        snapshotFlow { scroll.value to scroll.maxValue }.collect { (value, max) ->
-            if (preview.content.isEmpty() || preview.loading || preview.loadingMore || !preview.truncated) return@collect
-            if (max == 0 || value >= max - 480) onLoadMore()
+        snapshotFlow { scroll.value to scroll.maxValue }.collectLatest { (value, max) ->
+            val length = preview.content.length
+            if (length == 0 || preview.loading) return@collectLatest
+            val target = mark
+            if (!placed && target != null && target.scroll > 0) {
+                val caughtUp = !preview.loadingMore && (
+                    length >= target.loaded || !preview.truncated || max >= target.scroll
+                    )
+                if (!caughtUp) {
+                    if (preview.truncated && !preview.loadingMore) onLoadMore()
+                    return@collectLatest
+                }
+                if (max <= 0) return@collectLatest
+                scroll.scrollTo(target.scroll.coerceIn(0, max))
+                placed = true
+                return@collectLatest
+            }
+            if (max > 0 && value >= max - 480 && preview.truncated && !preview.loadingMore) onLoadMore()
+            if (placed) {
+                delay(200)
+                onScroll(scroll.value, length)
+            }
+        }
+    }
+    DisposableEffect(preview.path) {
+        onDispose {
+            if (preview.format != "image" && placed && preview.content.isNotEmpty()) {
+                onScroll(scroll.value, preview.content.length)
+            }
         }
     }
     Column(
@@ -108,7 +159,13 @@ fun FilePreviewScreen(preview: AppPreview, onBack: () -> Unit, onLoadMore: () ->
                     subtitle = "这个文件里没有内容。",
                 )
             }
-            preview.format == "image" -> ImageBody(preview.content, preview.name, Modifier.weight(1f).fillMaxWidth())
+            preview.format == "image" -> ImageBody(
+                preview.content,
+                preview.name,
+                mark,
+                { pixels -> if (pixels > 0) onScroll(pixels, 0) },
+                Modifier.weight(1f).fillMaxWidth(),
+            )
             else -> SelectionContainer(Modifier.weight(1f).fillMaxWidth()) {
                 Column(
                     modifier = Modifier
@@ -133,8 +190,15 @@ fun FilePreviewScreen(preview: AppPreview, onBack: () -> Unit, onLoadMore: () ->
 }
 
 @Composable
-private fun ImageBody(content: String, name: String, modifier: Modifier) {
+private fun ImageBody(
+    content: String,
+    name: String,
+    bookmark: PreviewBookmark?,
+    onScroll: (Int) -> Unit,
+    modifier: Modifier,
+) {
     val bitmap = remember(content) { decodePreviewImage(content) }
+    val scroll = rememberScrollState()
     if (bitmap == null) {
         EmptyState(
             icon = Icons.Outlined.ErrorOutline,
@@ -144,9 +208,26 @@ private fun ImageBody(content: String, name: String, modifier: Modifier) {
         )
         return
     }
+    LaunchedEffect(content) {
+        val target = bookmark?.scroll ?: 0
+        if (target > 0) {
+            val max = snapshotFlow { scroll.maxValue }.first { it > 0 }
+            scroll.scrollTo(target.coerceAtMost(max))
+        }
+    }
+    DisposableEffect(content) {
+        onDispose { if (scroll.value > 0) onScroll(scroll.value) }
+    }
+    LaunchedEffect(content) {
+        snapshotFlow { scroll.value }.collectLatest { value ->
+            if (value <= 0) return@collectLatest
+            delay(200)
+            onScroll(scroll.value)
+        }
+    }
     Column(
         modifier = modifier
-            .verticalScroll(rememberScrollState())
+            .verticalScroll(scroll)
             .padding(horizontal = 20.dp, vertical = 18.dp)
             .navigationBarsPadding(),
     ) {
@@ -322,3 +403,33 @@ private fun inlinePlain(raw: String): String =
     raw.replace(Regex("`([^`]+)`"), "$1")
         .replace(Regex("\\*\\*([^*]+)\\*\\*"), "$1")
         .replace(Regex("(?<!\\*)\\*([^*]+)\\*(?!\\*)"), "$1")
+
+@Serializable
+data class PreviewBookmark(val key: String, val scroll: Int, val loaded: Int)
+
+fun previewBookmarkKey(profile: String, projectId: String, path: String) = "$profile\n$projectId\n$path"
+
+class PreviewBookmarkStore(private val file: File) {
+    private val json = Json { ignoreUnknownKeys = true }
+    private val marks = mutableMapOf<String, PreviewBookmark>()
+
+    init {
+        if (file.exists()) {
+            runCatching { json.decodeFromString<List<PreviewBookmark>>(file.readText()) }
+                .getOrDefault(emptyList())
+                .forEach { marks[it.key] = it }
+        }
+    }
+
+    fun get(key: String): PreviewBookmark? = marks[key]
+
+    fun put(key: String, scroll: Int, loaded: Int) {
+        if (key.isBlank() || scroll < 0 || loaded < 0) return
+        if (scroll == 0 && loaded == 0) return
+        val next = PreviewBookmark(key, scroll, loaded)
+        if (marks[key] == next) return
+        marks[key] = next
+        file.parentFile?.mkdirs()
+        file.writeText(json.encodeToString(marks.values.toList()))
+    }
+}
