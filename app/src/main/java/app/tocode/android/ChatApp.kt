@@ -37,7 +37,6 @@ import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.LaptopMac
 import androidx.compose.material.icons.outlined.LinkOff
 import androidx.compose.material.icons.outlined.QrCodeScanner
-import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -83,18 +82,19 @@ fun RemoteScreen(controller: RemoteController) {
     }
     val desk = controller.desk(link.id)
     val session = desk.openSession
-    if (session != null) {
-        BackHandler { controller.closeChat(link.id) }
-        ChatScreen(controller, link, desk, session)
-        return
-    }
     val preview = desk.preview
-    if (preview != null) {
-        BackHandler { controller.closePreview(link.id) }
-        FilePreviewScreen(preview) { controller.closePreview(link.id) }
-        return
+    Box(modifier = Modifier.fillMaxSize()) {
+        if (session != null) {
+            if (preview == null) BackHandler { controller.closeChat(link.id) }
+            ChatScreen(controller, link, desk, session)
+        } else {
+            DeviceScreen(controller, link, desk)
+        }
+        if (preview != null) {
+            BackHandler { controller.closePreview(link.id) }
+            FilePreviewScreen(preview) { controller.closePreview(link.id) }
+        }
     }
-    DeviceScreen(controller, link, desk)
 }
 
 @Composable
@@ -213,7 +213,6 @@ private fun DeviceScreen(controller: RemoteController, link: AppLink, desk: AppD
                 state = linkState(online, desk),
                 onSwitch = { showSheet = true },
                 onProjects = { showProjects = true },
-                onRefresh = { controller.refreshCurrent(link.id) },
             )
         },
         bottomBar = {
@@ -325,14 +324,13 @@ private fun DeviceHeader(
     state: LinkState,
     onSwitch: () -> Unit,
     onProjects: () -> Unit,
-    onRefresh: () -> Unit,
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .background(Canvas)
             .statusBarsPadding()
-            .padding(start = 12.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
+            .padding(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Row(
@@ -391,9 +389,6 @@ private fun DeviceHeader(
                     Icon(Icons.Outlined.KeyboardArrowDown, contentDescription = "切换档案和项目", tint = Slate, modifier = Modifier.size(16.dp))
                 }
             }
-        }
-        IconButton(onClick = onRefresh) {
-            Icon(Icons.Outlined.Refresh, contentDescription = "刷新", tint = Slate)
         }
     }
 }

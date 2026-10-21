@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.navigationBars
@@ -27,8 +28,10 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
@@ -38,13 +41,14 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.ArrowForwardIos
 import androidx.compose.material.icons.automirrored.outlined.Send
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.outlined.Add
-import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
+import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.CloudOff
 import androidx.compose.material.icons.outlined.FolderOpen
-import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
@@ -71,9 +75,11 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 
 @Composable
 fun SessionsTab(
@@ -210,7 +216,7 @@ private fun HermesHero(desk: AppDesk, online: Boolean?, onCreate: () -> Unit) {
         desk.macOffline -> "Mac 不在线" to "请确认 Mac 上的 Tocode 已打开，连上后会自动同步。"
         desk.installed == null -> "正在确认 Hermes…" to "马上就好。"
         desk.installed == false -> "这台电脑没有 Hermes" to "手机聊天和目录已关闭，遥控仍然可以用。"
-        !desk.running -> "Hermes 没开" to "在 Mac 上打开「应用 → 网关链接」后，点右上角刷新。"
+        !desk.running -> "Hermes 没开" to "在 Mac 上打开「应用 → 网关链接」，连上后会自动同步。"
         else -> "" to ""
     }
     if (ready) {
@@ -379,16 +385,17 @@ fun ChatScreen(controller: RemoteController, link: AppLink, desk: AppDesk, sessi
     }
     val online = controller.online[link.id]
     var confirmDelete by remember { mutableStateOf(false) }
-    var renaming by remember { mutableStateOf(false) }
+    var managing by remember { mutableStateOf(false) }
+    var showFiles by rememberSaveable(session.id) { mutableStateOf(false) }
     val canSend = online == true && desk.canChat && !desk.sending
+    Box(modifier = Modifier.fillMaxSize()) {
     Column(modifier = Modifier.fillMaxSize().background(Canvas)) {
         ChatTopBar(
             title = session.title,
             subtitle = if (desk.sending) "Hermes 正在回复…" else "${link.macName} · ${linkState(online, desk).label}",
             onBack = { controller.closeChat(link.id) },
-            onTitle = { renaming = true },
-            onDelete = if (session.id.isNotEmpty()) ({ confirmDelete = true }) else null,
-            onRefresh = { controller.refreshCurrent(link.id) },
+            onTitle = { managing = true },
+            onDirectory = { showFiles = true },
         )
         val banner = when {
             desk.notice.isNotBlank() -> desk.notice to Tone.Bad
@@ -420,13 +427,29 @@ fun ChatScreen(controller: RemoteController, link: AppLink, desk: AppDesk, sessi
             onSend = { if (controller.sendChat(link.id, draft)) draft = "" },
         )
     }
-    if (renaming) {
-        TitleDialog(
+        if (showFiles) {
+            BackHandler { showFiles = false }
+            ProjectDirectoryDrawer(
+                controller = controller,
+                link = link,
+                desk = desk,
+                online = online,
+                onClose = { showFiles = false },
+            )
+        }
+    }
+    if (managing) {
+        SessionManageDialog(
             initial = session.title,
-            onDismiss = { renaming = false },
+            canDelete = session.id.isNotEmpty(),
+            onDismiss = { managing = false },
             onSave = {
-                renaming = false
+                managing = false
                 controller.renameSession(link.id, it)
+            },
+            onDelete = {
+                managing = false
+                confirmDelete = true
             },
         )
     }
@@ -453,10 +476,9 @@ fun ChatScreen(controller: RemoteController, link: AppLink, desk: AppDesk, sessi
 private fun ChatTopBar(
     title: String,
     subtitle: String,
-    onBack: () -> Unit,
-    onTitle: () -> Unit,
-    onDelete: (() -> Unit)?,
-    onRefresh: () -> Unit,
+            onBack: () -> Unit,
+            onTitle: () -> Unit,
+            onDirectory: () -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxWidth().background(Paper).statusBarsPadding()) {
         Row(
@@ -477,13 +499,8 @@ private fun ChatTopBar(
                 )
                 Text(subtitle, style = MaterialTheme.typography.labelMedium, color = Slate, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
-            if (onDelete != null) {
-                IconButton(onClick = onDelete) {
-                    Icon(Icons.Outlined.DeleteOutline, contentDescription = "删除会话", tint = Slate)
-                }
-            }
-            IconButton(onClick = onRefresh) {
-                Icon(Icons.Outlined.Refresh, contentDescription = "刷新", tint = Slate)
+            IconButton(onClick = onDirectory) {
+                Icon(Icons.Outlined.FolderOpen, contentDescription = "项目目录", tint = Ink)
             }
         }
         Box(Modifier.fillMaxWidth().height(1.dp).background(Hairline))
@@ -491,25 +508,40 @@ private fun ChatTopBar(
 }
 
 @Composable
-private fun TitleDialog(initial: String, onDismiss: () -> Unit, onSave: (String) -> Unit) {
+private fun SessionManageDialog(
+    initial: String,
+    canDelete: Boolean,
+    onDismiss: () -> Unit,
+    onSave: (String) -> Unit,
+    onDelete: () -> Unit,
+) {
     var text by remember { mutableStateOf(initial) }
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = Paper,
-        title = { Text("修改标题") },
+        title = { Text("会话管理") },
         text = {
-            OutlinedTextField(
-                value = text,
-                onValueChange = { text = it.take(80) },
-                singleLine = true,
-                shape = RoundedCornerShape(14.dp),
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = Pine,
-                    unfocusedBorderColor = Hairline,
-                    cursorColor = Pine,
-                ),
-                modifier = Modifier.fillMaxWidth(),
-            )
+            Column {
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { text = it.take(80) },
+                    singleLine = true,
+                    label = { Text("标题") },
+                    shape = RoundedCornerShape(14.dp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = Pine,
+                        unfocusedBorderColor = Hairline,
+                        cursorColor = Pine,
+                    ),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                if (canDelete) {
+                    Spacer(Modifier.height(8.dp))
+                    TextButton(onClick = onDelete, modifier = Modifier.fillMaxWidth()) {
+                        Text("删除会话", color = Coral)
+                    }
+                }
+            }
         },
         confirmButton = {
             TextButton(onClick = { if (text.isNotBlank()) onSave(text) }) { Text("保存", color = Pine) }
@@ -518,6 +550,69 @@ private fun TitleDialog(initial: String, onDismiss: () -> Unit, onSave: (String)
             TextButton(onClick = onDismiss) { Text("取消", color = Slate) }
         },
     )
+}
+
+@Composable
+private fun ProjectDirectoryDrawer(
+    controller: RemoteController,
+    link: AppLink,
+    desk: AppDesk,
+    online: Boolean?,
+    onClose: () -> Unit,
+) {
+    Box(modifier = Modifier.fillMaxSize()) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.32f))
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                    onClick = onClose,
+                ),
+        )
+        Column(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .fillMaxHeight(0.92f)
+                .clip(RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp))
+                .background(Canvas)
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                    onClick = {},
+                ),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp, top = 10.dp, bottom = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("项目目录", style = MaterialTheme.typography.titleMedium, color = Ink)
+                    Text(
+                        desk.openProject?.name ?: "未选项目",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = Slate,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            IconButton(onClick = onClose) {
+                Icon(Icons.Outlined.Close, contentDescription = "关闭目录", tint = Slate)
+            }
+            }
+            Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                FilesTab(
+                    controller,
+                    link,
+                    desk,
+                    online,
+                    onPickProject = {},
+                )
+            }
+        }
+    }
 }
 
 @Composable
@@ -578,8 +673,14 @@ private fun MessageList(desk: AppDesk) {
         if (desk.sending) {
             item(key = "typing") { AssistantBubble(null) }
         }
-        items(desk.turns.asReversed()) { turn ->
-            if (turn.role == "user") UserBubble(turn.text) else AssistantBubble(turn.text)
+        val blocks = chatBlocks(desk.turns)
+        itemsIndexed(blocks.asReversed()) { index, block ->
+            val live = desk.sending && index == 0 && block is ChatBlock.Process
+            when (block) {
+                is ChatBlock.User -> UserBubble(block.text)
+                is ChatBlock.Reply -> AssistantBubble(block.text)
+                is ChatBlock.Process -> ProcessBlock(block.lines, live)
+            }
         }
     }
 }
@@ -615,30 +716,89 @@ private fun UserBubble(text: String) {
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun ProcessBlock(lines: List<String>, live: Boolean) {
+    var opened by remember { mutableStateOf(false) }
+    LaunchedEffect(live) {
+        if (!live) opened = false
+    }
+    val shown = live || opened
+    val body = lines.joinToString("\n")
+    val clipboard = LocalClipboardManager.current
+    val context = LocalContext.current
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(enabled = !live) { opened = !opened }
+                .padding(vertical = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Text(
+                "过程回复 · ${lines.size} 条",
+                color = Ink,
+                fontSize = 16.sp,
+                fontWeight = FontWeight.SemiBold,
+                lineHeight = 22.sp,
+            )
+            if (live) {
+                CircularProgressIndicator(
+                    color = Pine,
+                    strokeWidth = 2.dp,
+                    modifier = Modifier.size(16.dp),
+                )
+            } else {
+                Icon(
+                    if (shown) Icons.Filled.KeyboardArrowUp else Icons.Filled.KeyboardArrowDown,
+                    contentDescription = if (shown) "收起" else "展开",
+                    tint = Slate,
+                    modifier = Modifier.size(20.dp),
+                )
+            }
+        }
+        if (shown) {
+            Text(
+                body,
+                color = Slate,
+                fontSize = 15.sp,
+                lineHeight = 22.sp,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(Fog)
+                    .border(1.dp, Hairline, RoundedCornerShape(8.dp))
+                    .combinedClickable(
+                        onClick = {},
+                        onLongClick = {
+                            clipboard.setText(AnnotatedString(body))
+                            Toast.makeText(context, "已复制", Toast.LENGTH_SHORT).show()
+                        },
+                    )
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+            )
+        }
+    }
+}
+
 @Composable
 private fun AssistantBubble(text: String?) {
-    Row(modifier = Modifier.fillMaxWidth().padding(end = 28.dp), verticalAlignment = Alignment.Top) {
-        Box(
-            modifier = Modifier.size(30.dp).clip(CircleShape).background(HeroBrush),
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(Icons.Outlined.AutoAwesome, contentDescription = null, tint = Color.White, modifier = Modifier.size(15.dp))
-        }
-        Spacer(Modifier.width(10.dp))
-        val shape = RoundedCornerShape(topStart = 6.dp, topEnd = 20.dp, bottomStart = 20.dp, bottomEnd = 20.dp)
-        Box(
-            modifier = Modifier
-                .clip(shape)
-                .background(Paper)
-                .border(1.dp, Hairline, shape)
-                .then(if (text != null) copyable(text) else Modifier)
-                .padding(horizontal = 15.dp, vertical = if (text == null) 15.dp else 11.dp),
-        ) {
-            if (text == null) {
-                TypingDots()
-            } else {
-                Text(text.ifBlank { "（没有文字回复）" }, style = MaterialTheme.typography.bodyLarge, color = Ink)
-            }
+    val shape = RoundedCornerShape(topStart = 6.dp, topEnd = 20.dp, bottomStart = 20.dp, bottomEnd = 20.dp)
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(end = 12.dp)
+            .clip(shape)
+            .background(Paper)
+            .border(1.dp, Hairline, shape)
+            .then(if (text != null) copyable(text) else Modifier)
+            .padding(horizontal = 15.dp, vertical = if (text == null) 15.dp else 11.dp),
+    ) {
+        if (text == null) {
+            TypingDots()
+        } else {
+            Text(text, style = MaterialTheme.typography.bodyLarge, color = Ink)
         }
     }
 }

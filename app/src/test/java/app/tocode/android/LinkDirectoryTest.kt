@@ -79,6 +79,22 @@ class LinkDirectoryTest {
     }
 
     @Test
+    fun processLinesCollapseAheadOfTheClosingReply() {
+        val blocks = chatBlocks(
+            listOf(
+                AppTurn("user", "写"),
+                AppTurn("assistant", "先读", interim = true),
+                AppTurn("assistant", "还差字数", interim = true),
+                AppTurn("assistant", "写完了"),
+            )
+        )
+        assertEquals(3, blocks.size)
+        assertEquals(ChatBlock.User("写"), blocks[0])
+        assertEquals(ChatBlock.Process(listOf("先读", "还差字数")), blocks[1])
+        assertEquals(ChatBlock.Reply("写完了"), blocks[2])
+    }
+
+    @Test
     fun chatStaysClosedWithoutHermes() {
         assertTrue(chatEntranceClosed(false))
         assertFalse(chatEntranceClosed(true))

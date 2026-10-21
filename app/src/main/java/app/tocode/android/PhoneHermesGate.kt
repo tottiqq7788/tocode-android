@@ -6,7 +6,39 @@ data class AppSession(val id: String, val title: String, val running: Boolean = 
 
 data class AppProject(val id: String, val name: String)
 
-data class AppTurn(val role: String, val text: String)
+data class AppTurn(val role: String, val text: String, val interim: Boolean = false)
+
+sealed class ChatBlock {
+    data class User(val text: String) : ChatBlock()
+    data class Reply(val text: String) : ChatBlock()
+    data class Process(val lines: List<String>) : ChatBlock()
+}
+
+fun chatBlocks(turns: List<AppTurn>): List<ChatBlock> {
+    val blocks = mutableListOf<ChatBlock>()
+    val pending = mutableListOf<String>()
+    fun flush() {
+        if (pending.isNotEmpty()) {
+            blocks.add(ChatBlock.Process(pending.toList()))
+            pending.clear()
+        }
+    }
+    for (turn in turns) {
+        when {
+            turn.role == "user" -> {
+                flush()
+                blocks.add(ChatBlock.User(turn.text))
+            }
+            turn.interim -> pending.add(turn.text)
+            else -> {
+                flush()
+                blocks.add(ChatBlock.Reply(turn.text))
+            }
+        }
+    }
+    flush()
+    return blocks
+}
 
 data class AppEntry(val path: String, val name: String, val kind: String)
 
@@ -94,7 +126,7 @@ fun parseTurns(body: JSONObject): List<AppTurn> {
             val text = row.optString("text")
             if (role != "user" && role != "assistant") continue
             if (role == "assistant" && text.isBlank()) continue
-            add(AppTurn(role, text))
+            add(AppTurn(role, text, row.optBoolean("interim")))
         }
     }
 }
