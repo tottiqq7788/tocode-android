@@ -15,12 +15,21 @@ import java.util.concurrent.Executors
 class AppDesk {
     var installed by mutableStateOf<Boolean?>(null)
     var running by mutableStateOf(false)
-    var pathConfigured by mutableStateOf(false)
+    var profile by mutableStateOf("default")
+    var profiles by mutableStateOf<List<String>>(emptyList())
+    var projects by mutableStateOf<List<AppProject>>(emptyList())
+    var projectsLoaded by mutableStateOf(false)
+    var macOffline by mutableStateOf(false)
+    var openProject by mutableStateOf<AppProject?>(null)
     var sessions by mutableStateOf<List<AppSession>>(emptyList())
     var sessionsLoaded by mutableStateOf(false)
     var entries by mutableStateOf<List<AppEntry>>(emptyList())
     var treeLoaded by mutableStateOf(false)
     var treeNotice by mutableStateOf("")
+    var folderPath by mutableStateOf("")
+    var folders by mutableStateOf<List<String>>(emptyList())
+    var foldersLoading by mutableStateOf(false)
+    var foldersNotice by mutableStateOf("")
     var turns by mutableStateOf<List<AppTurn>>(emptyList())
     var turnsLoading by mutableStateOf(false)
     var openSession by mutableStateOf<AppSession?>(null)
@@ -35,7 +44,7 @@ class AppDesk {
     val canChat: Boolean get() = installed == true && running
 }
 
-private data class AppWait(val linkId: String, val kind: String, val sessionId: String)
+private data class AppWait(val linkId: String, val kind: String, val sessionId: String, val projectId: String)
 
 class RemoteController(
     private val directory: LinkDirectory,
@@ -58,6 +67,7 @@ class RemoteController(
     private val appWait = linkedMapOf<String, AppWait>()
     private val sockets = linkedMapOf<String, WebSocket>()
     private val retryDelay = linkedMapOf<String, Long>()
+    private val statusRetry = mutableSetOf<String>()
     private val worker = Executors.newSingleThreadExecutor()
     private val main = Handler(Looper.getMainLooper())
 
@@ -128,7 +138,7 @@ class RemoteController(
         desk.turnsLoading = true
         desk.chatRequest = null
         desk.notice = ""
-        sendApp(id, "messages", sessionId = session.id)
+        sendApp(id, "messages", sessionId = session.id, profile = desk.profile, projectId = desk.openProject?.id.orEmpty())
     }
 
     fun closeChat(id: String) {
@@ -136,7 +146,77 @@ class RemoteController(
         desk.openSession = null
         desk.chatRequest = null
         desk.notice = ""
-        if (desk.installed == true) sendApp(id, "sessions", quiet = true)
+        val project = desk.openProject
+        if (desk.canChat && project != null) {
+            sendApp(id, "sessions", profile = desk.profile, projectId = project.id, quiet = true)
+        }
+    }
+
+    fun closeProject(id: String) {
+        val desk = desk(id)
+        desk.openProject = null
+        desk.sessions = emptyList()
+        desk.sessionsLoaded = false
+        clearTree(desk)
+        desk.notice = ""
+    }
+
+    fun selectProfile(id: String, name: String) {
+        val desk = desk(id)
+        if (!desk.canChat || desk.profile == name) return
+        desk.openProject = null
+        desk.sessions = emptyList()
+        desk.sessionsLoaded = false
+        clearTree(desk)
+        desk.projects = emptyList()
+        desk.projectsLoaded = false
+        desk.notice = ""
+        sendApp(id, "profile_select", profile = name, quiet = true)
+    }
+
+    fun openProject(id: String, project: AppProject) {
+        val desk = desk(id)
+        if (!desk.canChat) {
+            desk.notice = hermesClosedText(desk)
+            return
+        }
+        desk.openProject = project
+        desk.sessions = emptyList()
+        desk.sessionsLoaded = false
+        clearTree(desk)
+        desk.notice = ""
+        sendApp(id, "sessions", profile = desk.profile, projectId = project.id, quiet = true)
+        loadTree(id, desk)
+    }
+
+    fun browseFolders(id: String, path: String) {
+        val desk = desk(id)
+        desk.folderPath = path
+        desk.folders = emptyList()
+        desk.foldersLoading = true
+        desk.foldersNotice = ""
+        if (sendApp(id, "folders", path = path, quiet = true) == null) {
+            desk.foldersLoading = false
+            desk.foldersNotice = "这台 Mac 还没连上，正在重连…"
+        }
+    }
+
+    fun createProject(id: String, name: String, path: String) {
+        val desk = desk(id)
+        if (desk.creating) return
+        if (!desk.canChat) {
+            desk.notice = hermesClosedText(desk)
+            return
+        }
+        val trimmed = name.trim()
+        if (trimmed.isEmpty()) {
+            desk.notice = "请输入项目名称"
+            return
+        }
+        desk.notice = ""
+        if (sendApp(id, "project_create", title = trimmed, profile = desk.profile, path = path) != null) {
+            desk.creating = true
+        }
     }
 
     fun createSession(id: String, title: String) {
@@ -146,8 +226,20 @@ class RemoteController(
             desk.notice = hermesClosedText(desk)
             return
         }
+        val project = desk.openProject
+        if (project == null) {
+            desk.notice = "先进入一个项目"
+            return
+        }
         desk.notice = ""
-        if (sendApp(id, "session_create", title = title.trim().ifBlank { "新会话" }) != null) {
+        if (sendApp(
+                id,
+                "session_create",
+                title = title.trim().ifBlank { "新会话" },
+                profile = desk.profile,
+                projectId = project.id,
+            ) != null
+        ) {
             desk.creating = true
         }
     }
@@ -161,7 +253,15 @@ class RemoteController(
             desk.notice = hermesClosedText(desk)
             return false
         }
-        val requestId = sendApp(id, "chat", sessionId = session.id, text = trimmed) ?: return false
+        val project = desk.openProject ?: return false
+        val requestId = sendApp(
+            id,
+            "chat",
+            sessionId = session.id,
+            text = trimmed,
+            profile = desk.profile,
+            projectId = project.id,
+        ) ?: return false
         desk.turns = desk.turns + AppTurn("user", trimmed)
         desk.pendingText = trimmed
         desk.chatRequest = requestId
@@ -242,6 +342,17 @@ class RemoteController(
         worker.execute { runCatching { client.delete(link) } }
     }
 
+    private fun clearTree(desk: AppDesk) {
+        desk.entries = emptyList()
+        desk.treeNotice = ""
+        desk.treeLoaded = false
+    }
+
+    private fun loadTree(id: String, desk: AppDesk) {
+        val project = desk.openProject ?: return
+        sendApp(id, "tree", profile = desk.profile, projectId = project.id, quiet = true)
+    }
+
     private fun hermesClosedText(desk: AppDesk): String =
         if (desk.installed == false) "这台电脑没有 Hermes" else "这台电脑的 Hermes 没开"
 
@@ -262,6 +373,9 @@ class RemoteController(
         sessionId: String = "",
         title: String = "",
         text: String = "",
+        profile: String = "",
+        projectId: String = "",
+        path: String = "",
         quiet: Boolean = false,
     ): String? {
         if (directory.all().none { it.id == id }) return null
@@ -271,7 +385,7 @@ class RemoteController(
             return null
         }
         val requestId = UUID.randomUUID().toString()
-        appWait[requestId] = AppWait(id, kind, sessionId)
+        appWait[requestId] = AppWait(id, kind, sessionId, projectId)
         val body = JSONObject()
             .put("op", "app")
             .put("request_id", requestId)
@@ -279,6 +393,9 @@ class RemoteController(
             .put("session_id", sessionId)
             .put("title", title)
             .put("text", text)
+            .put("profile", profile)
+            .put("project_id", projectId)
+        if (path.isNotEmpty()) body.put("path", path)
         socket.send(body.toString())
         val timeout = if (kind == "chat") CHAT_TIMEOUT_MS else APP_TIMEOUT_MS
         main.postDelayed({
@@ -316,6 +433,14 @@ class RemoteController(
         main.postDelayed({
             if (sockets[link.id] === failed && directory.all().any { it.id == link.id }) connect(link)
         }, delay)
+    }
+
+    private fun scheduleStatusRetry(linkId: String) {
+        if (!statusRetry.add(linkId)) return
+        main.postDelayed({
+            statusRetry.remove(linkId)
+            if (desks[linkId]?.macOffline == true && online[linkId] == true) refreshApp(linkId)
+        }, STATUS_RETRY_MS)
     }
 
     private fun dropWaits(linkId: String) {
@@ -367,10 +492,19 @@ class RemoteController(
     private fun failApp(wait: AppWait, requestId: String, text: String) {
         val desk = desk(wait.linkId)
         when (wait.kind) {
-            "status" -> return
-            "session_create" -> desk.creating = false
+            "status" -> {
+                desk.macOffline = true
+                scheduleStatusRetry(wait.linkId)
+                return
+            }
+            "session_create", "project_create" -> desk.creating = false
             "messages" -> desk.turnsLoading = false
-            "tree" -> desk.treeLoaded = true
+            "tree" -> if (desk.openProject?.id == wait.projectId) desk.treeLoaded = true
+            "folders" -> {
+                desk.foldersLoading = false
+                desk.foldersNotice = text
+                return
+            }
             "chat" -> if (desk.chatRequest == requestId) {
                 desk.chatRequest = null
                 val last = desk.turns.lastOrNull()
@@ -395,11 +529,56 @@ class RemoteController(
         val body = message.optJSONObject("body") ?: JSONObject()
         when (wait.kind) {
             "status" -> {
+                desk.macOffline = false
                 desk.installed = body.optBoolean("hermes_installed")
                 desk.running = body.optBoolean("hermes_running")
-                desk.pathConfigured = body.optBoolean("path_configured")
-                if (desk.canChat) sendApp(linkId, "sessions", quiet = true) else desk.sessionsLoaded = true
-                if (desk.pathConfigured) sendApp(linkId, "tree", quiet = true) else desk.treeLoaded = true
+                val names = parseNames(body)
+                if (names.isNotEmpty()) desk.profiles = names
+                val profile = body.optString("profile").ifBlank { "default" }
+                if (desk.profile != profile) {
+                    desk.profile = profile
+                    desk.openProject = null
+                    desk.sessions = emptyList()
+                    desk.sessionsLoaded = false
+                    clearTree(desk)
+                }
+                if (desk.canChat) {
+                    sendApp(linkId, "projects", profile = desk.profile, quiet = true)
+                    desk.openProject?.let { project ->
+                        sendApp(linkId, "sessions", profile = desk.profile, projectId = project.id, quiet = true)
+                        loadTree(linkId, desk)
+                    }
+                } else {
+                    desk.projectsLoaded = true
+                    desk.sessionsLoaded = true
+                }
+            }
+            "profile_select" -> {
+                desk.profile = body.optString("profile").ifBlank { desk.profile }
+                val names = parseNames(body)
+                if (names.isNotEmpty()) desk.profiles = names
+                desk.openProject = null
+                desk.sessions = emptyList()
+                desk.sessionsLoaded = false
+                clearTree(desk)
+                desk.projects = parseProjects(body)
+                desk.projectsLoaded = true
+                if (text.isNotBlank()) desk.notice = text
+            }
+            "projects" -> {
+                desk.projects = parseProjects(body)
+                desk.projectsLoaded = true
+            }
+            "project_create" -> {
+                desk.creating = false
+                desk.notice = ""
+                val row = body.optJSONObject("project")
+                val id = row?.optString("id").orEmpty()
+                if (id.isNotBlank()) {
+                    val project = AppProject(id, row?.optString("name").orEmpty().ifBlank { "未命名项目" })
+                    desk.projects = listOf(project) + desk.projects.filter { it.id != id }
+                    openProject(linkId, project)
+                }
             }
             "sessions" -> {
                 desk.sessions = parseSessions(body)
@@ -424,10 +603,16 @@ class RemoteController(
                 desk.pendingText = ""
                 if (desk.openSession?.id == wait.sessionId) desk.turns = desk.turns + AppTurn("assistant", text)
             }
-            "tree" -> {
+            "tree" -> if (desk.openProject?.id == wait.projectId) {
                 desk.entries = parseEntries(body)
                 desk.treeLoaded = true
                 desk.treeNotice = text
+            }
+            "folders" -> {
+                desk.folderPath = body.optString("path")
+                desk.folders = parseFolders(body)
+                desk.foldersLoading = false
+                desk.foldersNotice = text
             }
         }
     }
@@ -444,5 +629,6 @@ class RemoteController(
         const val CHAT_TIMEOUT_MS = 6 * 60_000L
         const val RETRY_START_MS = 2_000L
         const val RETRY_MAX_MS = 30_000L
+        const val STATUS_RETRY_MS = 5_000L
     }
 }

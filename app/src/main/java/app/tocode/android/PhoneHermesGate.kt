@@ -4,6 +4,8 @@ import org.json.JSONObject
 
 data class AppSession(val id: String, val title: String)
 
+data class AppProject(val id: String, val name: String)
+
 data class AppTurn(val role: String, val text: String)
 
 data class AppEntry(val path: String, val name: String, val kind: String)
@@ -22,6 +24,42 @@ fun breadcrumb(path: String): List<String> {
     if (path.isEmpty()) return emptyList()
     val parts = path.split('/').filter { it.isNotEmpty() }
     return parts.indices.map { parts.subList(0, it + 1).joinToString("/") }
+}
+
+fun parseNames(body: JSONObject): List<String> {
+    val rows = body.optJSONArray("profiles") ?: return emptyList()
+    return buildList {
+        for (index in 0 until rows.length()) {
+            val name = rows.optString(index)
+            if (name.isNotBlank()) add(name)
+        }
+    }
+}
+
+fun parseFolders(body: JSONObject): List<String> {
+    val rows = body.optJSONArray("folders") ?: return emptyList()
+    return buildList {
+        for (index in 0 until rows.length()) {
+            val name = rows.optString(index)
+            if (name.isNotEmpty() && name != "." && name != ".." && !name.contains('/')) add(name)
+        }
+    }
+}
+
+fun childFolder(parent: String, name: String): String = if (parent.isEmpty()) name else "$parent/$name"
+
+fun parentFolder(path: String): String = path.substringBeforeLast('/', "")
+
+fun parseProjects(body: JSONObject): List<AppProject> {
+    val rows = body.optJSONArray("projects") ?: return emptyList()
+    return buildList {
+        for (index in 0 until rows.length()) {
+            val row = rows.optJSONObject(index) ?: continue
+            val id = row.optString("id")
+            if (id.isBlank()) continue
+            add(AppProject(id, row.optString("name").ifBlank { "未命名项目" }))
+        }
+    }
 }
 
 fun parseSessions(body: JSONObject): List<AppSession> {

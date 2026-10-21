@@ -62,8 +62,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 
 @Composable
-fun FilesTab(controller: RemoteController, link: AppLink, desk: AppDesk, online: Boolean?) {
-    var path by rememberSaveable(link.id) { mutableStateOf("") }
+fun FilesTab(controller: RemoteController, link: AppLink, desk: AppDesk, online: Boolean?, onPickProject: () -> Unit) {
+    val project = desk.openProject
+    var path by rememberSaveable(link.id, project?.id) { mutableStateOf("") }
     BackHandler(enabled = path.isNotEmpty()) { path = path.substringBeforeLast('/', "") }
     val children = childrenOf(desk.entries, path)
     LazyColumn(
@@ -71,15 +72,26 @@ fun FilesTab(controller: RemoteController, link: AppLink, desk: AppDesk, online:
         contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 24.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        if (!desk.pathConfigured && desk.installed != null) {
+        if (desk.installed == false) {
             item {
                 EmptyState(
                     icon = Icons.Outlined.FolderOff,
-                    title = "还没配置项目目录",
-                    subtitle = "在 Mac 菜单栏右键 Tocode，选择「应用 → 路径配置」挑一个文件夹。",
+                    title = "这台电脑没有 Hermes",
+                    subtitle = "目录跟着 Hermes 项目走，没有 Hermes 时不能浏览。",
                     tone = Tone.Warn,
-                    action = "我已配置，刷新",
-                    onAction = { controller.refreshCurrent(link.id) },
+                )
+            }
+            return@LazyColumn
+        }
+        if (project == null && desk.installed == true) {
+            item {
+                EmptyState(
+                    icon = Icons.Outlined.Folder,
+                    title = "先选一个项目",
+                    subtitle = "目录显示当前项目的文件夹。",
+                    tone = Tone.Good,
+                    action = "选择项目",
+                    onAction = onPickProject,
                 )
             }
             return@LazyColumn
@@ -108,7 +120,7 @@ fun FilesTab(controller: RemoteController, link: AppLink, desk: AppDesk, online:
         }
         item {
             SectionTitle(
-                if (path.isEmpty()) "项目根目录" else path.substringAfterLast('/'),
+                if (path.isEmpty()) project?.name ?: "项目根目录" else path.substringAfterLast('/'),
                 "${children.size} 项 · 只读",
             )
         }

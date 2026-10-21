@@ -1,6 +1,7 @@
 package app.tocode.android
 
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -25,8 +26,10 @@ import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -74,6 +77,7 @@ fun SessionsTab(
     online: Boolean?,
     onCreate: () -> Unit,
 ) {
+    BackHandler(enabled = desk.openProject != null) { controller.closeProject(link.id) }
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 24.dp),
@@ -84,34 +88,55 @@ fun SessionsTab(
             item { Banner(desk.notice, Tone.Bad) }
         }
         if (desk.canChat) {
-            item {
-                SectionTitle(
-                    "会话",
-                    if (desk.sessionsLoaded) "${desk.sessions.size} 个" else "",
-                    Modifier.padding(top = 8.dp),
-                )
-            }
-            when {
-                !desk.sessionsLoaded -> item { LoadingState("正在读取会话…") }
-                desk.sessions.isEmpty() -> item {
-                    EmptyState(
-                        icon = Icons.Outlined.ChatBubbleOutline,
-                        title = "还没有会话",
-                        subtitle = "点上方「新建会话」，开始第一段对话。",
-                        tone = Tone.Good,
+            val project = desk.openProject
+            if (project == null) {
+                item {
+                    SectionTitle(
+                        "${desk.profile} 的项目",
+                        if (desk.projectsLoaded) "${desk.projects.size} 个" else "",
+                        Modifier.padding(top = 8.dp),
                     )
                 }
-                else -> items(desk.sessions, key = { it.id }) { session ->
-                    SessionRow(session) { controller.openSession(link.id, session) }
+                when {
+                    !desk.projectsLoaded -> item { LoadingState("正在读取项目…") }
+                    desk.projects.isEmpty() -> item {
+                        EmptyState(
+                            icon = Icons.Outlined.FolderOpen,
+                            title = "这个档案还没有项目",
+                            subtitle = "点上方「新建项目」，从 Mac 主目录里选一个文件夹。",
+                            tone = Tone.Good,
+                        )
+                    }
+                    else -> items(desk.projects, key = { it.id }) { row ->
+                        ProjectRow(row) { controller.openProject(link.id, row) }
+                    }
+                }
+            } else {
+                item {
+                    SectionTitle(
+                        project.name,
+                        if (desk.sessionsLoaded) "${desk.sessions.size} 个会话" else "",
+                        Modifier.padding(top = 8.dp),
+                    )
+                }
+                when {
+                    !desk.sessionsLoaded -> item { LoadingState("正在读取会话…") }
+                    desk.sessions.isEmpty() -> item {
+                        EmptyState(
+                            icon = Icons.Outlined.ChatBubbleOutline,
+                            title = "这个项目还没有会话",
+                            subtitle = "点上方「新建会话」，开始第一段对话。",
+                            tone = Tone.Good,
+                        )
+                    }
+                    else -> items(desk.sessions, key = { it.id }) { session ->
+                        SessionRow(session) { controller.openSession(link.id, session) }
+                    }
                 }
             }
         } else if (desk.installed != null) {
             item {
                 Panel(padding = PaddingValues(horizontal = 18.dp, vertical = 8.dp)) {
-                    ShortcutRow(Icons.Outlined.FolderOpen, Tone.Warn, "浏览项目目录", "查看 Mac 上配置的文件夹") {
-                        controller.showTab(link.id, "files")
-                    }
-                    Box(Modifier.fillMaxWidth().padding(start = 54.dp).height(1.dp).background(Hairline))
                     ShortcutRow(Icons.Outlined.Tune, Tone.Info, "遥控这台 Mac", "黑屏、访达跟随、滚轮方向等") {
                         controller.showTab(link.id, "buttons")
                     }
@@ -138,11 +163,12 @@ private fun HermesHero(desk: AppDesk, online: Boolean?, onCreate: () -> Unit) {
     val (title, subtitle) = when {
         online == null && desk.installed == null -> "正在连接…" to "正在连接这台 Mac。"
         online == false && desk.installed == null -> "Mac 离线" to "恢复连接后会自动同步 Hermes 状态。"
+        desk.macOffline -> "Mac 不在线" to "请确认 Mac 上的 Tocode 已打开，连上后会自动同步。"
         desk.installed == null -> "正在确认 Hermes…" to "马上就好。"
-        desk.installed == false -> "这台电脑没有 Hermes" to "手机聊天已关闭，目录和遥控仍然可以用。"
-        !desk.running -> "Hermes 没开" to "在 Mac 上启动 Hermes 后，点右上角刷新。"
-        desk.pathConfigured -> "Hermes 已就绪" to "对话会在 Mac 配置的项目目录里进行。"
-        else -> "Hermes 已就绪" to "还没配置项目目录，可在 Mac 上「应用 → 路径配置」。"
+        desk.installed == false -> "这台电脑没有 Hermes" to "手机聊天和目录已关闭，遥控仍然可以用。"
+        !desk.running -> "Hermes 没开" to "在 Mac 上打开「应用 → 网关链接」后，点右上角刷新。"
+        desk.openProject != null -> "Hermes 已就绪" to "对话使用「${desk.openProject?.name}」的文件夹。"
+        else -> "Hermes 已就绪" to "在右上角切换档案和项目，会话和目录都会跟着走。"
     }
     Box(
         modifier = Modifier
@@ -165,7 +191,7 @@ private fun HermesHero(desk: AppDesk, online: Boolean?, onCreate: () -> Unit) {
                 Spacer(Modifier.height(14.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     GlassChip(if (desk.running) "服务运行中" else "服务未启动", desk.running)
-                    GlassChip(if (desk.pathConfigured) "目录已配置" else "目录未配置", desk.pathConfigured)
+                    GlassChip(desk.openProject?.name ?: "未选项目", desk.openProject != null)
                 }
             }
             if (ready) {
@@ -184,7 +210,15 @@ private fun HermesHero(desk: AppDesk, online: Boolean?, onCreate: () -> Unit) {
                         Icon(Icons.Outlined.Add, contentDescription = null, tint = Pine, modifier = Modifier.size(18.dp))
                     }
                     Spacer(Modifier.width(8.dp))
-                    Text(if (desk.creating) "正在创建…" else "新建会话", style = MaterialTheme.typography.labelLarge, color = Pine)
+                    Text(
+                        when {
+                            desk.creating -> "正在创建…"
+                            desk.openProject == null -> "新建项目"
+                            else -> "新建会话"
+                        },
+                        style = MaterialTheme.typography.labelLarge,
+                        color = Pine,
+                    )
                 }
             }
         }
@@ -219,6 +253,58 @@ private fun GlassChip(label: String, good: Boolean) {
         Dot(if (good) Color(0xFF7CF0BF) else Color(0xFFFFC46B), 6.dp)
         Spacer(Modifier.width(6.dp))
         Text(label, style = MaterialTheme.typography.labelMedium, color = Color.White)
+    }
+}
+
+@Composable
+fun ProfilePicker(names: List<String>, selected: String, onSelect: (String) -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        SectionTitle("档案", selected)
+        Row(
+            modifier = Modifier.horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            names.forEach { name ->
+                val on = name == selected
+                Text(
+                    name,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(999.dp))
+                        .background(if (on) Pine else Paper)
+                        .border(1.dp, if (on) Pine else Hairline, RoundedCornerShape(999.dp))
+                        .clickable { onSelect(name) }
+                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                    style = MaterialTheme.typography.labelLarge,
+                    color = if (on) Color.White else Ink,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ProjectRow(project: AppProject, onClick: () -> Unit) {
+    Panel(onClick = onClick, padding = PaddingValues(horizontal = 14.dp, vertical = 14.dp), radius = 18.dp) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                modifier = Modifier.size(42.dp).clip(RoundedCornerShape(14.dp)).background(PineSoft),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(Icons.Outlined.FolderOpen, contentDescription = null, tint = Pine, modifier = Modifier.size(20.dp))
+            }
+            Spacer(Modifier.width(14.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(project.name, style = MaterialTheme.typography.titleMedium, color = Ink, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Spacer(Modifier.height(2.dp))
+                Text("轻点查看会话", style = MaterialTheme.typography.bodySmall, color = SlateLight)
+            }
+            Icon(
+                Icons.AutoMirrored.Outlined.ArrowForwardIos,
+                contentDescription = null,
+                tint = SlateLight,
+                modifier = Modifier.size(14.dp),
+            )
+        }
     }
 }
 
@@ -269,7 +355,7 @@ fun ChatScreen(controller: RemoteController, link: AppLink, desk: AppDesk, sessi
         }
     }
     val online = controller.online[link.id]
-    val canSend = online == true && desk.canChat && desk.pathConfigured && !desk.sending
+    val canSend = online == true && desk.canChat && !desk.sending
     Column(modifier = Modifier.fillMaxSize().background(Canvas)) {
         ChatTopBar(
             title = session.title,
@@ -281,7 +367,6 @@ fun ChatScreen(controller: RemoteController, link: AppLink, desk: AppDesk, sessi
             desk.notice.isNotBlank() -> desk.notice to Tone.Bad
             online == false -> "这台 Mac 离线了，正在重连…" to Tone.Bad
             desk.installed == true && !desk.running -> "这台电脑的 Hermes 没开" to Tone.Warn
-            desk.installed == true && !desk.pathConfigured -> "还没配置项目目录，请在 Mac 上「应用 → 路径配置」" to Tone.Warn
             else -> null
         }
         if (banner != null) {
@@ -302,7 +387,6 @@ fun ChatScreen(controller: RemoteController, link: AppLink, desk: AppDesk, sessi
             placeholder = when {
                 online != true -> "等待 Mac 连接…"
                 !desk.canChat -> "Hermes 没开"
-                !desk.pathConfigured -> "先在 Mac 上配置项目目录"
                 desk.sending -> "Hermes 正在回复…"
                 else -> "给 Hermes 发消息"
             },

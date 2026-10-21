@@ -2,6 +2,7 @@ package app.tocode.android
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -18,11 +19,16 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material.icons.automirrored.outlined.ArrowForwardIos
+import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.outlined.CheckCircle
@@ -49,6 +55,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -155,17 +162,35 @@ private val tabs = listOf(
 @Composable
 private fun DeviceScreen(controller: RemoteController, link: AppLink, desk: AppDesk) {
     var showSheet by remember { mutableStateOf(false) }
+    var showProjects by remember { mutableStateOf(false) }
     var showCreate by remember { mutableStateOf(false) }
+    var pickFolder by remember { mutableStateOf(false) }
+    var chosenFolder by remember { mutableStateOf<String?>(null) }
     var unlinkTarget by remember { mutableStateOf<AppLink?>(null) }
     val online = controller.online[link.id]
+    if (pickFolder) {
+        FolderPicker(
+            controller = controller,
+            link = link,
+            desk = desk,
+            onDismiss = { pickFolder = false },
+            onChoose = {
+                pickFolder = false
+                chosenFolder = it
+            },
+        )
+        return
+    }
     BackHandler(enabled = desk.tab != "sessions") { controller.showTab(link.id, "sessions") }
     Scaffold(
         containerColor = Canvas,
         topBar = {
             DeviceHeader(
                 link = link,
+                desk = desk,
                 state = linkState(online, desk),
                 onSwitch = { showSheet = true },
+                onProjects = { showProjects = true },
                 onRefresh = { controller.refreshCurrent(link.id) },
             )
         },
@@ -191,9 +216,15 @@ private fun DeviceScreen(controller: RemoteController, link: AppLink, desk: AppD
     ) { padding ->
         Box(modifier = Modifier.fillMaxSize().padding(padding)) {
             when (desk.tab) {
-                "files" -> FilesTab(controller, link, desk, online)
+                "files" -> FilesTab(controller, link, desk, online, onPickProject = { showProjects = true })
                 "buttons" -> ControlTab(controller, link, online)
-                else -> SessionsTab(controller, link, desk, online, onCreate = { showCreate = true })
+                else -> SessionsTab(
+                    controller,
+                    link,
+                    desk,
+                    online,
+                    onCreate = { if (desk.openProject == null) pickFolder = true else showCreate = true },
+                )
             }
         }
     }
@@ -208,8 +239,38 @@ private fun DeviceScreen(controller: RemoteController, link: AppLink, desk: AppD
             },
         )
     }
+    if (showProjects) {
+        ProjectSheet(
+            controller = controller,
+            link = link,
+            desk = desk,
+            onDismiss = { showProjects = false },
+            onNewProject = {
+                showProjects = false
+                pickFolder = true
+            },
+        )
+    }
+    chosenFolder?.let { folder ->
+        NameDialog(
+            title = "新建项目",
+            hint = "文件夹：~/${folder}".trimEnd('/'),
+            placeholder = "项目名称",
+            requireName = true,
+            initial = folder.substringAfterLast('/').take(80),
+            onDismiss = { chosenFolder = null },
+            onCreate = {
+                chosenFolder = null
+                controller.createProject(link.id, it, folder)
+            },
+        )
+    }
     if (showCreate) {
-        CreateSessionDialog(
+        NameDialog(
+            title = "新建会话",
+            hint = "会话会留在当前项目里。",
+            placeholder = "会话标题（可不填）",
+            requireName = false,
             onDismiss = { showCreate = false },
             onCreate = {
                 showCreate = false
@@ -237,7 +298,14 @@ private fun DeviceScreen(controller: RemoteController, link: AppLink, desk: AppD
 }
 
 @Composable
-private fun DeviceHeader(link: AppLink, state: LinkState, onSwitch: () -> Unit, onRefresh: () -> Unit) {
+private fun DeviceHeader(
+    link: AppLink,
+    desk: AppDesk,
+    state: LinkState,
+    onSwitch: () -> Unit,
+    onProjects: () -> Unit,
+    onRefresh: () -> Unit,
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -280,9 +348,202 @@ private fun DeviceHeader(link: AppLink, state: LinkState, onSwitch: () -> Unit, 
                 }
             }
         }
+        if (desk.canChat) {
+            Column(
+                modifier = Modifier
+                    .widthIn(max = 132.dp)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(PineSoft)
+                    .clickable(onClick = onProjects)
+                    .padding(horizontal = 10.dp, vertical = 6.dp),
+            ) {
+                Text(desk.profile, style = MaterialTheme.typography.labelSmall, color = Pine, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        desk.openProject?.name ?: "选择项目",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = Ink,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+                    Icon(Icons.Outlined.KeyboardArrowDown, contentDescription = "切换档案和项目", tint = Slate, modifier = Modifier.size(16.dp))
+                }
+            }
+        }
         IconButton(onClick = onRefresh) {
             Icon(Icons.Outlined.Refresh, contentDescription = "刷新", tint = Slate)
         }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ProjectSheet(
+    controller: RemoteController,
+    link: AppLink,
+    desk: AppDesk,
+    onDismiss: () -> Unit,
+    onNewProject: () -> Unit,
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState, containerColor = Paper) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 24.dp)
+                .verticalScroll(rememberScrollState()),
+        ) {
+            Text("档案与项目", style = MaterialTheme.typography.titleLarge, color = Ink)
+            Spacer(Modifier.height(4.dp))
+            Text("会话和目录跟着所选项目走", style = MaterialTheme.typography.bodyMedium, color = Slate)
+            Spacer(Modifier.height(16.dp))
+            if (desk.profiles.isNotEmpty()) {
+                ProfilePicker(desk.profiles, desk.profile) { controller.selectProfile(link.id, it) }
+                Spacer(Modifier.height(16.dp))
+            }
+            Text("项目", style = MaterialTheme.typography.titleSmall, color = Ink)
+            Spacer(Modifier.height(8.dp))
+            when {
+                !desk.projectsLoaded -> Text("正在读取项目…", style = MaterialTheme.typography.bodyMedium, color = Slate)
+                desk.projects.isEmpty() -> Text("这个档案还没有项目", style = MaterialTheme.typography.bodyMedium, color = Slate)
+                else -> desk.projects.forEach { project ->
+                    val selected = project.id == desk.openProject?.id
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp)
+                            .clip(RoundedCornerShape(16.dp))
+                            .border(if (selected) 1.5.dp else 1.dp, if (selected) Pine else Hairline, RoundedCornerShape(16.dp))
+                            .clickable {
+                                controller.openProject(link.id, project)
+                                onDismiss()
+                            }
+                            .padding(horizontal = 14.dp, vertical = 13.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(Icons.Outlined.FolderOpen, contentDescription = null, tint = if (selected) Pine else Slate)
+                        Spacer(Modifier.width(12.dp))
+                        Text(
+                            project.name,
+                            style = MaterialTheme.typography.titleMedium,
+                            color = Ink,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f),
+                        )
+                        if (selected) Icon(Icons.Outlined.CheckCircle, contentDescription = "当前", tint = Pine)
+                    }
+                }
+            }
+            Spacer(Modifier.height(12.dp))
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(16.dp))
+                    .border(1.dp, Hairline, RoundedCornerShape(16.dp))
+                    .clickable(enabled = !desk.creating, onClick = onNewProject)
+                    .padding(vertical = 15.dp),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(Icons.Outlined.Add, contentDescription = null, tint = Pine)
+                Spacer(Modifier.width(8.dp))
+                Text("新建项目", style = MaterialTheme.typography.labelLarge, color = Pine)
+            }
+        }
+    }
+}
+
+@Composable
+private fun FolderPicker(
+    controller: RemoteController,
+    link: AppLink,
+    desk: AppDesk,
+    onDismiss: () -> Unit,
+    onChoose: (String) -> Unit,
+) {
+    LaunchedEffect(Unit) { controller.browseFolders(link.id, "") }
+    val path = desk.folderPath
+    BackHandler {
+        if (path.isEmpty()) onDismiss() else controller.browseFolders(link.id, parentFolder(path))
+    }
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Canvas)
+            .statusBarsPadding()
+            .navigationBarsPadding(),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(start = 4.dp, end = 8.dp, top = 6.dp, bottom = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            IconButton(onClick = onDismiss) { Icon(Icons.Outlined.Close, contentDescription = "取消", tint = Ink) }
+            Column(modifier = Modifier.weight(1f)) {
+                Text("选择项目文件夹", style = MaterialTheme.typography.titleMedium, color = Ink)
+                Text(
+                    if (path.isEmpty()) "~" else "~/$path",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = Slate,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp)
+                .verticalScroll(remember(path) { ScrollState(0) }),
+        ) {
+            if (desk.foldersNotice.isNotBlank()) {
+                Banner(desk.foldersNotice, Tone.Info, Modifier.padding(bottom = 10.dp))
+            }
+            if (path.isNotEmpty()) {
+                FolderRow("返回上一层", up = true, enabled = !desk.foldersLoading) {
+                    controller.browseFolders(link.id, parentFolder(path))
+                }
+            }
+            when {
+                desk.foldersLoading -> Text("正在读取…", style = MaterialTheme.typography.bodyMedium, color = Slate, modifier = Modifier.padding(16.dp))
+                desk.folders.isEmpty() -> Text("这里没有子文件夹", style = MaterialTheme.typography.bodyMedium, color = Slate, modifier = Modifier.padding(16.dp))
+                else -> desk.folders.forEach { name ->
+                    FolderRow(name, up = false, enabled = true) { controller.browseFolders(link.id, childFolder(path, name)) }
+                }
+            }
+        }
+        PrimaryButton(
+            text = if (path.isEmpty()) "选主目录" else "选「${path.substringAfterLast('/')}」",
+            onClick = { if (!desk.foldersLoading) onChoose(path) },
+            modifier = Modifier.fillMaxWidth().padding(16.dp),
+        )
+    }
+}
+
+@Composable
+private fun FolderRow(name: String, up: Boolean, enabled: Boolean, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 3.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .background(Paper)
+            .border(1.dp, Hairline, RoundedCornerShape(14.dp))
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 13.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            if (up) Icons.AutoMirrored.Outlined.ArrowBack else Icons.Outlined.Folder,
+            contentDescription = null,
+            tint = if (up) Slate else Pine,
+        )
+        Spacer(Modifier.width(12.dp))
+        Text(name, style = MaterialTheme.typography.bodyLarge, color = Ink, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+        if (!up) Icon(Icons.AutoMirrored.Outlined.ArrowForwardIos, contentDescription = null, tint = SlateLight, modifier = Modifier.size(13.dp))
     }
 }
 
@@ -359,20 +620,28 @@ private fun MacSheet(
 }
 
 @Composable
-private fun CreateSessionDialog(onDismiss: () -> Unit, onCreate: (String) -> Unit) {
-    var title by remember { mutableStateOf("") }
+private fun NameDialog(
+    title: String,
+    hint: String,
+    placeholder: String,
+    requireName: Boolean,
+    onDismiss: () -> Unit,
+    onCreate: (String) -> Unit,
+    initial: String = "",
+) {
+    var titleText by remember { mutableStateOf(initial) }
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = Paper,
-        title = { Text("新建会话") },
+        title = { Text(title) },
         text = {
             Column {
-                Text("会话会固定在这台 Mac 配置的项目目录里。", style = MaterialTheme.typography.bodyMedium, color = Slate)
+                Text(hint, style = MaterialTheme.typography.bodyMedium, color = Slate)
                 Spacer(Modifier.height(14.dp))
                 OutlinedTextField(
-                    value = title,
-                    onValueChange = { title = it.take(80) },
-                    placeholder = { Text("会话标题（可不填）") },
+                    value = titleText,
+                    onValueChange = { titleText = it.take(80) },
+                    placeholder = { Text(placeholder) },
                     singleLine = true,
                     shape = RoundedCornerShape(14.dp),
                     colors = OutlinedTextFieldDefaults.colors(
@@ -385,7 +654,11 @@ private fun CreateSessionDialog(onDismiss: () -> Unit, onCreate: (String) -> Uni
             }
         },
         confirmButton = {
-            TextButton(onClick = { onCreate(title) }) { Text("创建", color = Pine) }
+            TextButton(
+                onClick = {
+                    if (!requireName || titleText.isNotBlank()) onCreate(titleText)
+                },
+            ) { Text("创建", color = Pine) }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) { Text("取消", color = Slate) }
