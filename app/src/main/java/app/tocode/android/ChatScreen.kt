@@ -111,7 +111,10 @@ import androidx.compose.ui.text.input.TransformedText
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.withLink
+import androidx.compose.ui.text.PlatformTextStyle
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextGeometricTransform
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -544,7 +547,13 @@ fun ChatScreen(controller: RemoteController, link: AppLink, desk: AppDesk, sessi
         val preparing = attachments.any {
             it.bytes.isEmpty() && it.hold.isNullOrBlank() && it.reserved.isNullOrBlank() && it.landed.isNullOrBlank() && !it.failed
         }
-        val pendingLabels = attachments.filter { it.reserved.isNullOrBlank() }.associate { it.id to attachmentLabel(it) }
+        val chipNames = buildMap {
+            attachments.forEach { file ->
+                put(file.id, file.name)
+                val reserved = file.reserved
+                if (!reserved.isNullOrBlank()) put(reserved, file.name)
+            }
+        }
         Composer(
             draft = draft,
             cursor = cursor,
@@ -552,7 +561,7 @@ fun ChatScreen(controller: RemoteController, link: AppLink, desk: AppDesk, sessi
                 draft = text
                 cursor = nextCursor
             },
-            pendingLabels = pendingLabels,
+            chipNames = chipNames,
             onOpenPath = { openAttachment(it) },
             onPickImage = {
                 if (attachments.size >= ATTACHMENT_COUNT) desk.notice = "一次最多带 10 个文件"
@@ -897,7 +906,8 @@ private fun copyable(text: String): Modifier {
 
 @Composable
 private fun UserBubble(text: String, onOpen: (String) -> Unit) {
-    val chips = remember(text) { userChipText(text) }
+    val bodySp = MaterialTheme.typography.bodyLarge.fontSize.value
+    val chips = remember(text, bodySp) { userChipText(text, bodySp) }
     val clipboard = LocalClipboardManager.current
     val context = LocalContext.current
     var layout by remember(text) { mutableStateOf<TextLayoutResult?>(null) }
@@ -914,7 +924,10 @@ private fun UserBubble(text: String, onOpen: (String) -> Unit) {
             if (chips == null) {
                 Text(text, style = MaterialTheme.typography.bodyLarge, color = Color.White)
             } else {
-                Text(
+                Box {
+                    val result = layout
+                    if (result != null) AttachmentChipLayer(result, chips.chips, onOpen = null)
+                    Text(
                     chips.text,
                     style = MaterialTheme.typography.bodyLarge,
                     color = Color.White,
@@ -933,6 +946,7 @@ private fun UserBubble(text: String, onOpen: (String) -> Unit) {
                         )
                     },
                 )
+                }
             }
         }
     }
@@ -1061,7 +1075,7 @@ private fun Composer(
     draft: String,
     cursor: Int,
     onDraft: (String, Int) -> Unit,
-    pendingLabels: Map<String, String>,
+    chipNames: Map<String, String>,
     onOpenPath: (String) -> Unit,
     onPickImage: () -> Unit,
     onPickFile: () -> Unit,
@@ -1131,6 +1145,8 @@ private fun Composer(
                 }
                 val chipHolder = remember { ChipHolder() }
                 var layout by remember { mutableStateOf<TextLayoutResult?>(null) }
+                val result = layout
+                if (result != null) AttachmentChipLayer(result, chipHolder.chips, onOpen = null)
                 BasicTextField(
                     value = TextFieldValue(draft, TextRange(cursor.coerceIn(0, draft.length))),
                     onValueChange = { next ->
@@ -1142,30 +1158,16 @@ private fun Composer(
                     enabled = fieldEnabled,
                     textStyle = MaterialTheme.typography.bodyLarge.copy(color = Ink),
                     cursorBrush = SolidColor(Pine),
-                    visualTransformation = AttachmentChipTransformation(pendingLabels, chipHolder),
+                    visualTransformation = AttachmentChipTransformation(
+                        chipNames,
+                        chipHolder,
+                        MaterialTheme.typography.bodyLarge.fontSize.value,
+                    ),
                     onTextLayout = { layout = it },
                     maxLines = 6,
                     modifier = Modifier.fillMaxWidth(),
                 )
-                val density = LocalDensity.current
-                val result = layout
-                if (result != null) {
-                    chipHolder.chips.forEach { chip ->
-                        val end = chip.end - 1
-                        if (chip.start < 0 || end < chip.start) return@forEach
-                        val first = runCatching { result.getBoundingBox(chip.start) }.getOrNull() ?: return@forEach
-                        val last = runCatching { result.getBoundingBox(end) }.getOrNull() ?: first
-                        Box(
-                            modifier = Modifier
-                                .offset { IntOffset(first.left.toInt(), first.top.toInt()) }
-                                .size(
-                                    width = with(density) { (last.right - first.left).coerceAtLeast(1f).toDp() },
-                                    height = with(density) { first.height.coerceAtLeast(1f).toDp() },
-                                )
-                                .clickable { onOpenPath(chip.path) },
-                        )
-                    }
-                }
+                if (result != null) AttachmentChipLayer(result, chipHolder.chips, onOpen = onOpenPath)
             }
             Spacer(Modifier.width(10.dp))
             Box(
@@ -1301,7 +1303,7 @@ private data class VisualChip(val start: Int, val end: Int, val path: String)
 
 private data class UserChipText(val text: AnnotatedString, val chips: List<VisualChip>)
 
-private fun userChipText(raw: String): UserChipText? {
+private fun userChipText(raw: String, bodySp: Float): UserChipText? {
     val spans = attachmentSpans(raw).filter { !it.path.isNullOrBlank() }
     if (spans.isEmpty()) return null
     val chips = mutableListOf<VisualChip>()
@@ -1311,8 +1313,8 @@ private fun userChipText(raw: String): UserChipText? {
             val path = span.path ?: continue
             append(raw.substring(cursor, span.start))
             val start = length
-            pushStyle(SpanStyle(background = Color.White, color = Pine, fontWeight = FontWeight.Medium))
-            append(path.substringAfterLast('/'))
+            pushStyle(chipSpan(bodySp))
+            append(chipVisual(path.substringAfterLast('/')))
             pop()
             chips.add(VisualChip(start, length, path))
             cursor = span.end
@@ -1320,6 +1322,53 @@ private fun userChipText(raw: String): UserChipText? {
         append(raw.substring(cursor))
     }
     return UserChipText(annotated, chips)
+}
+
+@Composable
+private fun AttachmentChipLayer(
+    layout: TextLayoutResult,
+    chips: List<VisualChip>,
+    onOpen: ((String) -> Unit)?,
+) {
+    val density = LocalDensity.current
+    val chipHeight = with(density) { 18.dp.toPx() }
+    chips.forEach { chip ->
+        val end = chip.end - 1
+        if (chip.start < 0 || end < chip.start) return@forEach
+        val first = runCatching { layout.getBoundingBox(chip.start) }.getOrNull() ?: return@forEach
+        val last = runCatching { layout.getBoundingBox(end) }.getOrNull() ?: first
+        val line = layout.getLineForOffset(chip.start)
+        val lineTop = layout.getLineTop(line)
+        val lineBottom = layout.getLineBottom(line)
+        val height = chipHeight.coerceAtMost(lineBottom - lineTop)
+        val top = lineTop + (lineBottom - lineTop - height) / 2f
+        val left = minOf(first.left, last.left)
+        val right = maxOf(first.right, last.right)
+        val width = (right - left).coerceAtLeast(1f)
+        val plate = Modifier
+            .offset { IntOffset(left.toInt(), top.toInt()) }
+            .size(width = with(density) { width.toDp() }, height = with(density) { height.toDp() })
+            .clip(RoundedCornerShape(6.dp))
+        if (onOpen == null) {
+            val label = layout.layoutInput.text.text
+                .substring(chip.start, chip.end.coerceAtMost(layout.layoutInput.text.length))
+                .trim(ChipPad)
+            Box(plate.background(PineSoft), contentAlignment = Alignment.Center) {
+                Text(
+                    label,
+                    color = Ink,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Medium,
+                    lineHeight = 14.sp,
+                    maxLines = 1,
+                    softWrap = false,
+                    style = TextStyle(platformStyle = PlatformTextStyle(includeFontPadding = false)),
+                )
+            }
+        } else if (chip.path.isNotBlank()) {
+            Box(plate.clickable { onOpen(chip.path) })
+        }
+    }
 }
 
 private class ChipHolder {
@@ -1338,9 +1387,19 @@ private class ChipOffsetMapping(
         visualTo[offset.coerceIn(0, visualTo.lastIndex)]
 }
 
+private const val ChipPad = ' '
+
+private fun chipVisual(label: String) = "$ChipPad$label$ChipPad"
+
+private fun chipSpan(bodySp: Float) = SpanStyle(
+    color = Color.Transparent,
+    textGeometricTransform = TextGeometricTransform(scaleX = 12f / bodySp.coerceAtLeast(1f)),
+)
+
 private class AttachmentChipTransformation(
     private val labels: Map<String, String>,
     private val holder: ChipHolder,
+    private val bodySp: Float,
 ) : VisualTransformation {
     override fun filter(text: AnnotatedString): TransformedText {
         val raw = text.text
@@ -1362,26 +1421,21 @@ private class AttachmentChipTransformation(
                 builder.append(raw[index])
                 index++
             }
-            val label = if (span.provisionalId != null) {
-                labels[span.provisionalId].orEmpty().ifBlank { "上传中" }
-            } else {
-                span.path.orEmpty().substringAfterLast('/').ifBlank { "文件" }
-            }
+            val path = span.path
+            val label = when {
+                span.provisionalId != null -> labels[span.provisionalId].orEmpty()
+                path != null -> labels[path].orEmpty().ifBlank { path.substringAfterLast('/') }
+                else -> ""
+            }.ifBlank { "文件" }
+            val visual = chipVisual(label)
             val visualStart = builder.length
-            builder.pushStyle(
-                SpanStyle(
-                    background = Color.White,
-                    color = if (label.contains("没传上")) Coral else Pine,
-                    fontWeight = FontWeight.Medium,
-                ),
-            )
-            builder.append(label)
+            builder.pushStyle(chipSpan(bodySp))
+            builder.append(visual)
             builder.pop()
             for (offset in span.start until span.end) originalTo[offset] = visualStart
-            val half = label.length / 2
-            for (glyph in label.indices) visualTo.add(if (glyph < half) span.start else span.end)
-            val path = span.path
-            if (!path.isNullOrBlank() && label.isNotEmpty()) chips.add(VisualChip(visualStart, visualStart + label.length, path))
+            val half = visual.length / 2
+            for (glyph in visual.indices) visualTo.add(if (glyph < half) span.start else span.end)
+            chips.add(VisualChip(visualStart, visualStart + visual.length, path.orEmpty()))
             index = span.end
         }
         while (index < raw.length) {
