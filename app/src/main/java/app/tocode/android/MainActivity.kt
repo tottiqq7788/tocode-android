@@ -56,6 +56,7 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         controller?.ensureConnected()
+        refreshSessionWidgets(applicationContext)
     }
 
     private fun openIntent(intent: Intent?) {

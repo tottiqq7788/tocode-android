@@ -89,7 +89,7 @@ class SmallSessionWidget : GlanceAppWidget() {
                 val reply = view.reply
                 when {
                     run != null -> {
-                        Text(run.title, maxLines = 2, style = text(White, 16.sp, FontWeight.Bold))
+                        Text(run.title, maxLines = 2, style = text(White, 18.sp, FontWeight.Bold))
                         Spacer(GlanceModifier.height(6.dp))
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             LiveDot()
@@ -101,14 +101,14 @@ class SmallSessionWidget : GlanceAppWidget() {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Image(ImageProvider(R.drawable.ic_widget_done), contentDescription = null, modifier = GlanceModifier.size(14.dp))
                             Spacer(GlanceModifier.width(4.dp))
-                            Text("刚刚回复", style = text(Mint, 11.sp, FontWeight.Medium))
+                            Text("刚刚回复", style = text(Mint, 13.sp, FontWeight.Medium))
                         }
                         Spacer(GlanceModifier.height(4.dp))
-                        Text(reply.title, maxLines = 2, style = text(White, 15.sp, FontWeight.Bold))
-                        Text(repliedAgo(now, reply.finishedAt), style = text(Faint, 11.sp))
+                        Text(reply.title, maxLines = 2, style = text(White, 17.sp, FontWeight.Bold))
+                        Text(repliedAgo(now, reply.finishedAt), style = text(Faint, 13.sp))
                     }
                     else -> {
-                        Text("都回复完了", style = text(White, 16.sp, FontWeight.Bold))
+                        Text("都回复完了", style = text(White, 18.sp, FontWeight.Bold))
                         Spacer(GlanceModifier.height(8.dp))
                         Pill("新会话")
                     }
@@ -125,7 +125,7 @@ class MediumSessionWidget : GlanceAppWidget() {
         val now = System.currentTimeMillis()
         val view = mediumSessionView(loadSessions(context), loadReplies(context), now)
         provideContent {
-            val room = rowsThatFit(LocalSize.current, reserved = 70.dp)
+            val room = rowsThatFit(LocalSize.current, reserved = 78.dp)
             Column(cardFrame()) {
                 Row(GlanceModifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     Header(view.running, compact = false, modifier = GlanceModifier.defaultWeight())
@@ -157,7 +157,7 @@ class LargeSessionWidget : GlanceAppWidget() {
         val now = System.currentTimeMillis()
         val view = largeSessionView(loadSessions(context), loadReplies(context), now)
         provideContent {
-            var room = rowsThatFit(LocalSize.current, reserved = 180.dp)
+            var room = rowsThatFit(LocalSize.current, reserved = 196.dp)
             val groups = mutableListOf<LargeSessionGroup>()
             for (group in view.groups) {
                 if (room <= 0) break
@@ -177,7 +177,7 @@ class LargeSessionWidget : GlanceAppWidget() {
                         groups.forEach { group ->
                             Column(GlanceModifier.fillMaxWidth()) {
                                 if (groups.size > 1) {
-                                    Text(group.label, maxLines = 1, style = text(Faint, 11.sp), modifier = GlanceModifier.padding(top = 6.dp))
+                                    Text(group.label, maxLines = 1, style = text(Faint, 13.sp), modifier = GlanceModifier.padding(top = 6.dp))
                                 }
                                 group.rows.forEach { row -> Gap { RunRow(row) } }
                             }
@@ -187,7 +187,7 @@ class LargeSessionWidget : GlanceAppWidget() {
                 Column(GlanceModifier.fillMaxWidth().padding(top = 12.dp)) {
                     SectionLabel("刚刚回复", "")
                     if (replies.isEmpty()) {
-                        Text("回复结束后会出现在这里", style = text(Faint, 12.sp), modifier = GlanceModifier.padding(top = 6.dp))
+                        Text("回复结束后会出现在这里", style = text(Faint, 14.sp), modifier = GlanceModifier.padding(top = 6.dp))
                     } else {
                         replies.forEach { row -> Gap { ReplyRow(row, now) } }
                     }
@@ -222,7 +222,7 @@ private fun Header(running: Int, compact: Boolean, modifier: GlanceModifier = Gl
     Row(modifier, verticalAlignment = Alignment.CenterVertically) {
         Image(ImageProvider(R.drawable.ic_stat_session), contentDescription = null, modifier = GlanceModifier.size(16.dp))
         Spacer(GlanceModifier.width(6.dp))
-        Text("Tocode", style = text(White, 13.sp, FontWeight.Bold))
+        Text("Tocode", style = text(White, 15.sp, FontWeight.Bold))
         if (compact) Spacer(GlanceModifier.defaultWeight()) else Spacer(GlanceModifier.width(8.dp))
         if (running > 0) {
             Row(
@@ -231,7 +231,7 @@ private fun Header(running: Int, compact: Boolean, modifier: GlanceModifier = Gl
             ) {
                 LiveDot()
                 Spacer(GlanceModifier.width(5.dp))
-                Text(if (compact) "$running" else "进行中 $running", style = text(White, 11.sp, FontWeight.Medium))
+                Text(if (compact) "$running" else "进行中 $running", style = text(White, 13.sp, FontWeight.Medium))
             }
         }
     }
@@ -250,8 +250,8 @@ private fun RunRow(row: WidgetRunRow) {
         LiveDot()
         Spacer(GlanceModifier.width(8.dp))
         Column(GlanceModifier.defaultWeight()) {
-            Text(row.title, maxLines = 1, style = text(White, 14.sp, FontWeight.Medium))
-            if (row.place.isNotBlank()) Text(row.place, maxLines = 1, style = text(Faint, 11.sp))
+            Text(row.title, maxLines = 1, style = text(White, 16.sp, FontWeight.Medium))
+            if (row.place.isNotBlank()) Text(row.place, maxLines = 1, style = text(Faint, 13.sp))
         }
         Spacer(GlanceModifier.width(8.dp))
         Elapsed(row.startedAt)
@@ -271,11 +271,11 @@ private fun ReplyRow(row: WidgetReplyRow, now: Long) {
         Image(ImageProvider(R.drawable.ic_widget_done), contentDescription = null, modifier = GlanceModifier.size(14.dp))
         Spacer(GlanceModifier.width(8.dp))
         Column(GlanceModifier.defaultWeight()) {
-            Text(row.title, maxLines = 1, style = text(White, 14.sp, FontWeight.Medium))
-            Text(listOf(row.place, "已回复").filter { it.isNotBlank() }.joinToString(" · "), maxLines = 1, style = text(Faint, 11.sp))
+            Text(row.title, maxLines = 1, style = text(White, 16.sp, FontWeight.Medium))
+            Text(listOf(row.place, "已回复").filter { it.isNotBlank() }.joinToString(" · "), maxLines = 1, style = text(Faint, 13.sp))
         }
         Spacer(GlanceModifier.width(8.dp))
-        Text(repliedAgo(now, row.finishedAt), style = text(Mist, 11.sp))
+        Text(repliedAgo(now, row.finishedAt), style = text(Mist, 13.sp))
     }
 }
 
@@ -288,8 +288,8 @@ private fun EmptyRow(title: String, subtitle: String) {
             .padding(horizontal = 12.dp, vertical = 10.dp)
             .clickable(openTab(TAB_NEW_SESSION)),
     ) {
-        Text(title, maxLines = 1, style = text(White, 14.sp, FontWeight.Medium))
-        Text(subtitle, maxLines = 1, style = text(Faint, 11.sp))
+        Text(title, maxLines = 1, style = text(White, 16.sp, FontWeight.Medium))
+        Text(subtitle, maxLines = 1, style = text(Faint, 13.sp))
     }
 }
 
@@ -301,8 +301,8 @@ private fun Gap(content: @Composable () -> Unit) {
 @Composable
 private fun SectionLabel(title: String, trailing: String) {
     Row(GlanceModifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        Text(title, style = text(Mint, 11.sp, FontWeight.Bold), modifier = GlanceModifier.defaultWeight())
-        if (trailing.isNotBlank()) Text(trailing, style = text(Faint, 11.sp))
+        Text(title, style = text(Mint, 13.sp, FontWeight.Bold), modifier = GlanceModifier.defaultWeight())
+        if (trailing.isNotBlank()) Text(trailing, style = text(Faint, 13.sp))
     }
 }
 
@@ -323,7 +323,7 @@ private fun QuickCircle(icon: Int, label: String, tab: String) {
 private fun QuickTile(icon: Int, label: String, tab: String, modifier: GlanceModifier) {
     Row(
         modifier
-            .height(40.dp)
+            .height(44.dp)
             .background(ImageProvider(R.drawable.widget_chip))
             .clickable(openTab(tab)),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -331,7 +331,7 @@ private fun QuickTile(icon: Int, label: String, tab: String, modifier: GlanceMod
     ) {
         Image(ImageProvider(icon), contentDescription = null, modifier = GlanceModifier.size(16.dp))
         Spacer(GlanceModifier.width(6.dp))
-        Text(label, style = text(White, 12.sp, FontWeight.Medium))
+        Text(label, style = text(White, 14.sp, FontWeight.Medium))
     }
 }
 
@@ -341,7 +341,7 @@ private fun Pill(label: String) {
         GlanceModifier.background(ImageProvider(R.drawable.widget_pill)).padding(horizontal = 12.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text("+ $label", style = text(Deep, 12.sp, FontWeight.Bold))
+        Text("+ $label", style = text(Deep, 14.sp, FontWeight.Bold))
     }
 }
 
@@ -360,7 +360,7 @@ private fun Elapsed(startedAt: Long) {
 }
 
 private fun rowsThatFit(size: DpSize, reserved: androidx.compose.ui.unit.Dp): Int =
-    (((size.height - reserved).value) / 46f).toInt().coerceAtLeast(1)
+    (((size.height - reserved).value) / 54f).toInt().coerceAtLeast(1)
 
 private fun text(color: Color, size: TextUnit, weight: FontWeight = FontWeight.Normal) =
     TextStyle(color = ColorProvider(color), fontSize = size, fontWeight = weight)
