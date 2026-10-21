@@ -119,6 +119,26 @@ data class FolderPage(
     val loaded: Boolean = false,
 )
 
+fun absoluteProjectPath(root: String, relative: String): String? {
+    if (!root.startsWith("/") || root.contains('\u0000')) return null
+    val base = root.trimEnd('/')
+    if (base.isEmpty() || base.contains("..")) return null
+    val parts = relative.split('/')
+    if (parts.isEmpty() || parts.any { it.isEmpty() || it == "." || it == ".." }) return null
+    return "$base/$relative"
+}
+
+fun appendCitation(draft: String, absolute: String, limit: Int = 4000): String? {
+    if (!absolute.startsWith("/") || absolute.contains('\n') || absolute.contains('「') || absolute.contains('」')) return null
+    val token = "「$absolute」"
+    val next = when {
+        draft.isEmpty() -> token
+        draft.endsWith("\n") -> draft + token
+        else -> draft + "\n" + token
+    }
+    return if (next.length > limit) null else next
+}
+
 fun mergeFolderEntries(existing: List<AppEntry>, folder: String, incoming: List<AppEntry>, offset: Int): List<AppEntry> {
     val page = incoming.filter { it.path.isNotEmpty() && it.parent() == folder }
     return if (offset <= 0) {

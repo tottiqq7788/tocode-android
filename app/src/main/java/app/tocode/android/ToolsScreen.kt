@@ -95,6 +95,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
@@ -111,7 +113,9 @@ fun FilesTab(
     path: String,
     onPath: (String) -> Unit,
     onPickProject: () -> Unit,
+    onQuote: ((String) -> Unit)? = null,
 ) {
+    val clipboard = LocalClipboardManager.current
     val project = desk.openProject
     BackHandler(enabled = path.isNotEmpty()) { onPath(path.substringBeforeLast('/', "")) }
     val children = childrenOf(desk.entries, path)
@@ -240,6 +244,15 @@ fun FilesTab(
                     EntryRow(
                         entry = entry,
                         count = if (entry.isFolder()) desk.entries.count { it.parent() == entry.path } else 0,
+                        onCite = {
+                            val absolute = absoluteProjectPath(desk.projectRoot, entry.path)
+                            if (absolute == null) {
+                                desk.notice = "还不知道这个项目的路径"
+                            } else {
+                                clipboard.setText(AnnotatedString(absolute))
+                                onQuote?.invoke(absolute)
+                            }
+                        },
                         onOpen = {
                             if (entry.isFolder()) onPath(entry.path) else controller.openPreview(link.id, entry)
                         },
@@ -300,31 +313,41 @@ private fun Crumb(label: String, selected: Boolean, onClick: () -> Unit) {
 }
 
 @Composable
-private fun EntryRow(entry: AppEntry, count: Int, onOpen: () -> Unit) {
+private fun EntryRow(entry: AppEntry, count: Int, onCite: () -> Unit, onOpen: () -> Unit) {
     val folder = entry.isFolder()
     val ext = entry.name.substringAfterLast('.', "").lowercase()
     Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onOpen)
-            .padding(horizontal = 14.dp, vertical = 11.dp),
+        modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        if (folder) IconBadge(Icons.Outlined.Folder, Tone.Warn, size = 38.dp) else IconBadge(fileIcon(ext), fileTone(ext), size = 38.dp)
-        Spacer(Modifier.width(14.dp))
-        Column(modifier = Modifier.weight(1f)) {
-            Text(entry.name, style = MaterialTheme.typography.titleSmall, color = Ink, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text(
-                when {
-                    folder -> if (count > 0) "$count 项" else "文件夹"
-                    ext.isNotEmpty() -> "${ext.uppercase()} 文件"
-                    else -> "文件"
-                },
-                style = MaterialTheme.typography.bodySmall,
-                color = SlateLight,
-            )
+        Box(
+            modifier = Modifier
+                .clickable(onClick = onCite)
+                .padding(start = 10.dp, top = 8.dp, bottom = 8.dp, end = 8.dp),
+        ) {
+            if (folder) IconBadge(Icons.Outlined.Folder, Tone.Warn, size = 38.dp) else IconBadge(fileIcon(ext), fileTone(ext), size = 38.dp)
         }
-        Icon(Icons.AutoMirrored.Outlined.ArrowForwardIos, contentDescription = null, tint = SlateLight, modifier = Modifier.size(13.dp))
+        Row(
+            modifier = Modifier
+                .weight(1f)
+                .clickable(onClick = onOpen)
+                .padding(top = 11.dp, bottom = 11.dp, end = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(entry.name, style = MaterialTheme.typography.titleSmall, color = Ink, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(
+                    when {
+                        folder -> if (count > 0) "$count 项" else "文件夹"
+                        ext.isNotEmpty() -> "${ext.uppercase()} 文件"
+                        else -> "文件"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = SlateLight,
+                )
+            }
+            Icon(Icons.AutoMirrored.Outlined.ArrowForwardIos, contentDescription = null, tint = SlateLight, modifier = Modifier.size(13.dp))
+        }
     }
 }
 

@@ -526,6 +526,11 @@ fun ChatScreen(controller: RemoteController, link: AppLink, desk: AppDesk, sessi
                 desk = desk,
                 online = online,
                 onClose = { showFiles = false },
+                onQuote = { absolute ->
+                    val next = appendCitation(draft, absolute)
+                    if (next == null) desk.notice = "消息太长，放不下这条路径"
+                    else draft = next
+                },
             )
         }
     }
@@ -650,6 +655,7 @@ private fun ProjectDirectoryDrawer(
     desk: AppDesk,
     online: Boolean?,
     onClose: () -> Unit,
+    onQuote: (String) -> Unit,
 ) {
     Box(modifier = Modifier.fillMaxSize()) {
         Box(
@@ -698,6 +704,7 @@ private fun ProjectDirectoryDrawer(
                 path = desk.directoryPath,
                 onPath = { controller.openDirectory(link.id, it) },
                 onPickProject = {},
+                onQuote = onQuote,
             )
             }
         }

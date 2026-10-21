@@ -25,6 +25,7 @@ class AppDesk {
     var sessions by mutableStateOf<List<AppSession>>(emptyList())
     var sessionsLoaded by mutableStateOf(false)
     var entries by mutableStateOf<List<AppEntry>>(emptyList())
+    var projectRoot by mutableStateOf("")
     var folderPages by mutableStateOf<Map<String, FolderPage>>(emptyMap())
     var treeLoaded by mutableStateOf(false)
     var treeNotice by mutableStateOf("")
@@ -660,6 +661,7 @@ class RemoteController(
 
     private fun clearTree(desk: AppDesk) {
         desk.entries = emptyList()
+        desk.projectRoot = ""
         desk.folderPages = emptyMap()
         desk.treeNotice = ""
         desk.treeLoaded = false
@@ -1142,6 +1144,8 @@ class RemoteController(
                     desk.folderPages = desk.folderPages + (wait.path to page.copy(loadingOffset = null, loaded = true, truncated = false))
                     return
                 }
+                val root = body.optString("root")
+                if (root.startsWith("/") && !root.contains("..")) desk.projectRoot = root.trimEnd('/')
                 desk.entries = mergeFolderEntries(desk.entries, wait.path, incoming, wait.offset)
                 desk.folderPages = desk.folderPages + (
                     wait.path to FolderPage(

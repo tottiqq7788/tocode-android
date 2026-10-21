@@ -92,6 +92,18 @@ class LinkDirectoryTest {
     }
 
     @Test
+    fun citingAppendsTheAbsolutePathWithoutLeavingTheProject() {
+        val root = "/Users/totti/project"
+        assertEquals("$root/对话附件-文件/a.png", absoluteProjectPath(root, "对话附件-文件/a.png"))
+        assertEquals(null, absoluteProjectPath(root, "../secret"))
+        assertEquals(null, absoluteProjectPath("relative", "a.txt"))
+        assertEquals("「$root/a.txt」", appendCitation("", "$root/a.txt"))
+        assertEquals("已有\n「$root/a.txt」", appendCitation("已有", "$root/a.txt"))
+        assertEquals("「$root/a.txt」\n「$root/b.txt」", appendCitation("「$root/a.txt」", "$root/b.txt"))
+        assertEquals(null, appendCitation("x".repeat(4000), "$root/a.txt"))
+    }
+
+    @Test
     fun folderPagesAppendWithoutDroppingTheEarlierPage() {
         val first = listOf(
             AppEntry("dir", "dir", "directory"),
