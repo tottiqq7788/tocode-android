@@ -158,6 +158,8 @@ class LinkDirectoryTest {
         assertEquals(5, visibleExchange(6, null))
         assertEquals(4, visibleExchange(6, 4))
         assertEquals(-1, visibleExchange(0, null))
+        assertEquals("0/0", pageLabel(0, -1))
+        assertEquals("5/6", pageLabel(6, 4))
         assertNull(pagerTarget(6, 4, forward = true))
         assertEquals(4, pagerTarget(6, 5, forward = false))
     }

@@ -483,7 +483,7 @@ fun ChatScreen(controller: RemoteController, link: AppLink, desk: AppDesk, sessi
                 else filePicker.launch(arrayOf("*/*"))
             },
             picking = canSend && !uploading,
-            pageLabel = if (pageCount == 0) "" else "${pageIndex + 1}/$pageCount",
+            pageLabel = pageLabel(pageCount, pageIndex),
             canBack = pageIndex > 0,
             canForward = pageCount > 1 && pageIndex < pageCount - 1,
             onBack = { pinned = pagerTarget(pageCount, pageIndex, forward = false) },

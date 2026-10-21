@@ -63,6 +63,9 @@ fun visibleExchange(count: Int, pinned: Int?): Int {
     return chosen.coerceIn(0, count - 1)
 }
 
+fun pageLabel(count: Int, index: Int): String =
+    if (count <= 0) "0/0" else "${index + 1}/$count"
+
 /** 翻到最后一页时返回空，表示继续跟着最新一次。 */
 fun pagerTarget(count: Int, index: Int, forward: Boolean): Int? {
     if (count <= 0 || index !in 0 until count) return null
