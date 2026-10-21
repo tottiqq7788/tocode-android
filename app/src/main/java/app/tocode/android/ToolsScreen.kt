@@ -20,6 +20,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -87,6 +89,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -112,10 +115,22 @@ fun FilesTab(
     val project = desk.openProject
     BackHandler(enabled = path.isNotEmpty()) { onPath(path.substringBeforeLast('/', "")) }
     val children = childrenOf(desk.entries, path)
+    val page = desk.folderPages[path]
+    val listState = rememberLazyListState()
+    LaunchedEffect(path, children.size, page?.loaded, page?.truncated, page?.loadingOffset) {
+        if (page?.loaded != true || page.truncated != true || page.loadingOffset != null) return@LaunchedEffect
+        snapshotFlow {
+            val info = listState.layoutInfo
+            val last = info.visibleItemsInfo.lastOrNull()?.index ?: -1
+            info.totalItemsCount > 0 && last >= info.totalItemsCount - 2
+        }.collect { nearEnd ->
+            if (nearEnd) controller.loadMoreDirectory(link.id)
+        }
+    }
     LazyColumn(
+        state = listState,
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 24.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         if (desk.installed == false) {
             item {
@@ -156,40 +171,93 @@ fun FilesTab(
             }
             return@LazyColumn
         }
-        item { Breadcrumbs(path, onPick = onPath) }
+        item { Box(Modifier.padding(bottom = 12.dp)) { Breadcrumbs(path, onPick = onPath) } }
         if (desk.treeNotice.isNotBlank()) {
-            item { Banner(desk.treeNotice, Tone.Info) }
+            item { Box(Modifier.padding(bottom = 12.dp)) { Banner(desk.treeNotice, Tone.Info) } }
         }
         if (desk.notice.isNotBlank()) {
-            item { Banner(desk.notice, Tone.Bad) }
+            item { Box(Modifier.padding(bottom = 12.dp)) { Banner(desk.notice, Tone.Bad) } }
+        }
+        if (page?.loaded != true) {
+            item {
+                if (desk.treeNotice.isNotBlank()) {
+                    EmptyState(
+                        icon = Icons.Outlined.FolderOff,
+                        title = "目录没有读出来",
+                        subtitle = desk.treeNotice,
+                        tone = Tone.Bad,
+                    )
+                } else {
+                    LoadingState("正在读取目录…")
+                }
+            }
+            return@LazyColumn
         }
         item {
-            SectionTitle(
-                if (path.isEmpty()) project?.name ?: "项目根目录" else path.substringAfterLast('/'),
-                "${children.size} 项 · 只读",
-            )
-        }
-        item {
-            if (children.isEmpty()) {
-                EmptyState(
-                    icon = Icons.Outlined.Folder,
-                    title = "空文件夹",
-                    subtitle = "这里没有可以显示的内容。",
+            Box(Modifier.padding(bottom = 12.dp)) {
+                SectionTitle(
+                    if (path.isEmpty()) project?.name ?: "项目根目录" else path.substringAfterLast('/'),
+                    if (page.truncated) "已列出 ${children.size} 项 · 只读" else "${children.size} 项 · 只读",
                 )
-            } else {
-                Panel(padding = PaddingValues(vertical = 4.dp), radius = 18.dp) {
-                    children.forEachIndexed { index, entry ->
-                        if (index > 0) {
-                            Box(Modifier.fillMaxWidth().padding(start = 66.dp).height(1.dp).background(Hairline))
-                        }
-                        EntryRow(
-                            entry = entry,
-                            count = if (entry.isFolder()) desk.entries.count { it.parent() == entry.path } else 0,
-                            onOpen = {
-                                if (entry.isFolder()) onPath(entry.path) else controller.openPreview(link.id, entry)
-                            },
-                        )
+            }
+        }
+        if (children.isEmpty()) {
+            item {
+                if (desk.treeNotice.isNotBlank()) {
+                    EmptyState(
+                        icon = Icons.Outlined.FolderOff,
+                        title = "目录没有读出来",
+                        subtitle = desk.treeNotice,
+                        tone = Tone.Bad,
+                    )
+                } else {
+                    EmptyState(
+                        icon = Icons.Outlined.Folder,
+                        title = "空文件夹",
+                        subtitle = "这里没有可以显示的内容。",
+                    )
+                }
+            }
+        } else {
+            itemsIndexed(children, key = { _, entry -> entry.path }) { index, entry ->
+                val more = page.loadingOffset != null
+                val shape = when {
+                    children.size == 1 && !more -> RoundedCornerShape(18.dp)
+                    index == 0 -> RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp)
+                    index == children.lastIndex && !more -> RoundedCornerShape(bottomStart = 18.dp, bottomEnd = 18.dp)
+                    else -> RoundedCornerShape(0.dp)
+                }
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(shape)
+                        .background(Paper)
+                        .border(1.dp, Hairline, shape),
+                ) {
+                    if (index > 0) {
+                        Box(Modifier.fillMaxWidth().padding(start = 66.dp).height(1.dp).background(Hairline))
                     }
+                    EntryRow(
+                        entry = entry,
+                        count = if (entry.isFolder()) desk.entries.count { it.parent() == entry.path } else 0,
+                        onOpen = {
+                            if (entry.isFolder()) onPath(entry.path) else controller.openPreview(link.id, entry)
+                        },
+                    )
+                }
+            }
+            if (page.loadingOffset != null) {
+                item {
+                    Text(
+                        "继续列出…",
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(bottomStart = 18.dp, bottomEnd = 18.dp))
+                            .background(Paper)
+                            .padding(horizontal = 16.dp, vertical = 14.dp),
+                        style = MaterialTheme.typography.labelLarge,
+                        color = Slate,
+                    )
                 }
             }
         }

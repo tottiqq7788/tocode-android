@@ -25,6 +25,7 @@ class AppDesk {
     var sessions by mutableStateOf<List<AppSession>>(emptyList())
     var sessionsLoaded by mutableStateOf(false)
     var entries by mutableStateOf<List<AppEntry>>(emptyList())
+    var folderPages by mutableStateOf<Map<String, FolderPage>>(emptyMap())
     var treeLoaded by mutableStateOf(false)
     var treeNotice by mutableStateOf("")
     var folderPath by mutableStateOf("")
@@ -616,7 +617,17 @@ class RemoteController(
     }
 
     fun openDirectory(id: String, path: String) {
-        desk(id).directoryPath = path
+        val desk = desk(id)
+        desk.directoryPath = path
+        loadFolder(id, desk, path, 0)
+    }
+
+    fun loadMoreDirectory(id: String) {
+        val desk = desk(id)
+        val path = desk.directoryPath
+        val page = desk.folderPages[path] ?: return
+        if (!page.loaded || !page.truncated || page.loadingOffset != null) return
+        loadFolder(id, desk, path, page.next)
     }
 
     private val runPolls = mutableSetOf<String>()
@@ -649,6 +660,7 @@ class RemoteController(
 
     private fun clearTree(desk: AppDesk) {
         desk.entries = emptyList()
+        desk.folderPages = emptyMap()
         desk.treeNotice = ""
         desk.treeLoaded = false
         desk.preview = null
@@ -656,8 +668,31 @@ class RemoteController(
     }
 
     private fun loadTree(id: String, desk: AppDesk) {
+        val page = desk.folderPages[""]
+        if (page?.loaded == true || page?.loadingOffset != null) return
+        loadFolder(id, desk, "", 0)
+    }
+
+    private fun loadFolder(id: String, desk: AppDesk, path: String, offset: Int) {
         val project = desk.openProject ?: return
-        sendApp(id, "tree", profile = desk.profile, projectId = project.id, quiet = true)
+        val current = desk.folderPages[path]
+        if (offset == 0 && (current?.loaded == true || current?.loadingOffset != null)) return
+        if (offset > 0 && (current == null || !current.loaded || !current.truncated || current.loadingOffset != null || offset != current.next)) return
+        desk.folderPages = desk.folderPages + (path to (current ?: FolderPage()).copy(loadingOffset = offset))
+        val request = sendApp(
+            id,
+            "tree",
+            profile = desk.profile,
+            projectId = project.id,
+            path = path,
+            offset = offset,
+            quiet = true,
+        )
+        if (request == null) {
+            desk.treeLoaded = true
+            desk.folderPages = desk.folderPages + (path to (desk.folderPages[path] ?: FolderPage()).copy(loadingOffset = null, loaded = offset > 0, truncated = false))
+            if (offset == 0) desk.treeNotice = "这台 Mac 还没连上，正在重连…"
+        }
     }
 
     private fun hermesClosedText(desk: AppDesk): String =
@@ -873,7 +908,18 @@ class RemoteController(
                 }
             }
             "messages" -> desk.turnsLoading = false
-            "tree" -> if (desk.openProject?.id == wait.projectId) desk.treeLoaded = true
+            "tree" -> {
+                if (desk.openProject?.id == wait.projectId) {
+                    desk.treeLoaded = true
+                    val page = desk.folderPages[wait.path] ?: FolderPage()
+                    if (page.loadingOffset == wait.offset) {
+                        desk.folderPages = desk.folderPages + (wait.path to page.copy(loadingOffset = null, loaded = true, truncated = false))
+                        desk.treeNotice = text
+                    }
+                }
+                if (wait.offset == 0) desk.notice = text
+                return
+            }
             "preview" -> {
                 val current = desk.preview
                 if (current != null && current.path == wait.path) {
@@ -1087,9 +1133,25 @@ class RemoteController(
                 )
             }
             "tree" -> if (desk.openProject?.id == wait.projectId) {
-                desk.entries = parseEntries(body)
+                val page = desk.folderPages[wait.path] ?: FolderPage()
+                if (page.loadingOffset != wait.offset) return
+                val incoming = parseEntries(body)
+                val next = body.optInt("next", wait.offset)
+                val advanced = wait.offset > 0 && incoming.isNotEmpty() && next > wait.offset
+                if (wait.offset > 0 && !advanced) {
+                    desk.folderPages = desk.folderPages + (wait.path to page.copy(loadingOffset = null, loaded = true, truncated = false))
+                    return
+                }
+                desk.entries = mergeFolderEntries(desk.entries, wait.path, incoming, wait.offset)
+                desk.folderPages = desk.folderPages + (
+                    wait.path to FolderPage(
+                        next = next,
+                        truncated = body.optBoolean("truncated") && next > wait.offset,
+                        loaded = true,
+                    )
+                )
                 desk.treeLoaded = true
-                desk.treeNotice = text
+                desk.treeNotice = ""
             }
             "folders" -> {
                 desk.folderPath = body.optString("path")

@@ -112,6 +112,23 @@ fun landedAttachments(files: List<ChatAttachment>, paths: List<String?>): List<C
 
 data class AppEntry(val path: String, val name: String, val kind: String)
 
+data class FolderPage(
+    val next: Int = 0,
+    val truncated: Boolean = false,
+    val loadingOffset: Int? = null,
+    val loaded: Boolean = false,
+)
+
+fun mergeFolderEntries(existing: List<AppEntry>, folder: String, incoming: List<AppEntry>, offset: Int): List<AppEntry> {
+    val page = incoming.filter { it.path.isNotEmpty() && it.parent() == folder }
+    return if (offset <= 0) {
+        existing.filter { it.parent() != folder } + page
+    } else {
+        val known = existing.map { it.path }.toSet()
+        existing + page.filter { it.path !in known }
+    }
+}
+
 data class AppPreview(
     val path: String,
     val name: String,

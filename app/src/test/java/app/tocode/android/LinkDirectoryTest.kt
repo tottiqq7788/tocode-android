@@ -92,6 +92,24 @@ class LinkDirectoryTest {
     }
 
     @Test
+    fun folderPagesAppendWithoutDroppingTheEarlierPage() {
+        val first = listOf(
+            AppEntry("dir", "dir", "directory"),
+            AppEntry("a.txt", "a.txt", "file"),
+        )
+        val kept = mergeFolderEntries(first, "", first, 0)
+        val more = mergeFolderEntries(
+            kept,
+            "",
+            listOf(AppEntry("b.txt", "b.txt", "file"), AppEntry("a.txt", "a.txt", "file"), AppEntry("dir/nested.txt", "nested.txt", "file")),
+            2,
+        )
+        assertEquals(listOf("dir", "a.txt", "b.txt"), more.map { it.path })
+        val replaced = mergeFolderEntries(more, "dir", listOf(AppEntry("dir/nested.txt", "nested.txt", "file")), 0)
+        assertEquals(listOf("dir", "a.txt", "b.txt", "dir/nested.txt"), replaced.map { it.path })
+    }
+
+    @Test
     fun replyPathsLinkTheLongestProjectEntry() {
         val entries = listOf(
             AppEntry("chapters", "chapters", "directory"),
