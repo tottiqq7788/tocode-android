@@ -49,6 +49,8 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.ArrowForwardIos
+import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowLeft
+import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.outlined.Send
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
@@ -997,24 +999,38 @@ private fun Composer(
             }
         }
         Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 12.dp, end = 12.dp, top = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             ToolButton(Icons.Outlined.Image, "图片", picking, onPickImage)
+            Spacer(Modifier.width(6.dp))
             ToolButton(Icons.Outlined.AttachFile, "附件", picking, onPickFile)
             Spacer(Modifier.weight(1f))
-            PageArrow("<", canBack, onBack)
-            Text(
-                pageLabel,
-                color = Ink,
-                style = MaterialTheme.typography.bodyMedium,
-                modifier = Modifier.widthIn(min = 36.dp),
-                textAlign = TextAlign.Center,
-            )
-            PageArrow(">", canForward, onForward)
+            Row(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(999.dp))
+                    .background(Fog)
+                    .padding(horizontal = 2.dp, vertical = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                PageArrow(Icons.AutoMirrored.Outlined.KeyboardArrowLeft, "上一页", canBack, onBack)
+                if (pageLabel.isNotEmpty()) {
+                    Text(
+                        pageLabel,
+                        color = Ink,
+                        fontWeight = FontWeight.Medium,
+                        style = MaterialTheme.typography.labelLarge,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.widthIn(min = 40.dp).padding(horizontal = 2.dp),
+                    )
+                }
+                PageArrow(Icons.AutoMirrored.Outlined.KeyboardArrowRight, "下一页", canForward, onForward)
+            }
         }
         Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
+            modifier = Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, top = 4.dp, bottom = 8.dp),
             verticalAlignment = Alignment.Bottom,
         ) {
             Box(
@@ -1065,27 +1081,29 @@ private fun Composer(
 private fun ToolButton(icon: ImageVector, label: String, enabled: Boolean, onClick: () -> Unit) {
     Row(
         modifier = Modifier
-            .clip(RoundedCornerShape(16.dp))
+            .clip(RoundedCornerShape(999.dp))
+            .background(if (enabled) PineSoft else Fog)
             .clickable(enabled = enabled, onClick = onClick)
-            .padding(horizontal = 8.dp, vertical = 6.dp),
+            .padding(horizontal = 10.dp, vertical = 5.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(icon, contentDescription = label, tint = if (enabled) Pine else SlateLight, modifier = Modifier.size(18.dp))
+        Icon(icon, contentDescription = label, tint = if (enabled) Pine else SlateLight, modifier = Modifier.size(16.dp))
         Spacer(Modifier.width(4.dp))
-        Text(label, color = if (enabled) Ink else SlateLight, style = MaterialTheme.typography.bodyMedium)
+        Text(label, color = if (enabled) Ink else SlateLight, style = MaterialTheme.typography.labelLarge)
     }
 }
 
 @Composable
-private fun PageArrow(label: String, enabled: Boolean, onClick: () -> Unit) {
+private fun PageArrow(icon: ImageVector, description: String, enabled: Boolean, onClick: () -> Unit) {
     Box(
         modifier = Modifier
-            .size(32.dp)
+            .size(28.dp)
             .clip(CircleShape)
+            .background(if (enabled) Color.White else Color.Transparent)
             .clickable(enabled = enabled, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
-        Text(label, color = if (enabled) Ink else SlateLight, style = MaterialTheme.typography.titleMedium)
+        Icon(icon, contentDescription = description, tint = if (enabled) Pine else SlateLight, modifier = Modifier.size(18.dp))
     }
 }
 
