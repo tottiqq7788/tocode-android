@@ -223,9 +223,14 @@ private fun ReadyCard(desk: AppDesk, onCreate: () -> Unit) {
             .padding(horizontal = 16.dp, vertical = 14.dp),
     ) {
         Column {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
                 GlassChip(if (desk.running) "服务运行中" else "服务未启动", desk.running)
                 GlassChip(sessions, desk.openProject != null)
+                if (desk.model.isNotBlank()) GlassChip(desk.model, true, Modifier.weight(1f, fill = false))
             }
             if (desk.openProject == null) {
                 Spacer(Modifier.height(14.dp))
@@ -310,17 +315,25 @@ private fun ShortcutRow(icon: ImageVector, tone: Tone, title: String, subtitle: 
 }
 
 @Composable
-private fun GlassChip(label: String, good: Boolean) {
+private fun GlassChip(label: String, good: Boolean, modifier: Modifier = Modifier) {
     Row(
-        modifier = Modifier
+        modifier = modifier
             .clip(RoundedCornerShape(999.dp))
             .background(Color.White.copy(alpha = 0.16f))
-            .padding(horizontal = 10.dp, vertical = 5.dp),
+            .padding(horizontal = 8.dp, vertical = 5.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Dot(if (good) Color(0xFF7CF0BF) else Color(0xFFFFC46B), 6.dp)
-        Spacer(Modifier.width(6.dp))
-        Text(label, style = MaterialTheme.typography.labelMedium, color = Color.White)
+        Spacer(Modifier.width(4.dp))
+        Text(
+            label,
+            style = MaterialTheme.typography.labelMedium,
+            color = Color.White,
+            maxLines = 1,
+            softWrap = false,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f, fill = false),
+        )
     }
 }
 

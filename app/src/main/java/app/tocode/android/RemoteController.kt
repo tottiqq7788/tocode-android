@@ -16,6 +16,7 @@ import java.util.concurrent.Executors
 class AppDesk {
     var installed by mutableStateOf<Boolean?>(null)
     var running by mutableStateOf(false)
+    var model by mutableStateOf("")
     var profile by mutableStateOf("default")
     var profiles by mutableStateOf<List<String>>(emptyList())
     var projects by mutableStateOf<List<AppProject>>(emptyList())
@@ -1223,6 +1224,7 @@ class RemoteController(
                 desk.running = body.optBoolean("hermes_running")
                 val names = parseNames(body)
                 if (names.isNotEmpty()) desk.profiles = names
+                if (body.has("model")) desk.model = body.optString("model")
                 val profile = body.optString("profile").ifBlank { "default" }
                 if (desk.profile != profile) {
                     desk.profile = profile
@@ -1243,6 +1245,7 @@ class RemoteController(
                 }
             }
             "profile_select" -> {
+                if (body.has("model")) desk.model = body.optString("model")
                 desk.profile = body.optString("profile").ifBlank { desk.profile }
                 val names = parseNames(body)
                 if (names.isNotEmpty()) desk.profiles = names
@@ -1270,6 +1273,7 @@ class RemoteController(
                 }
             }
             "sessions" -> {
+                if (body.has("model")) desk.model = body.optString("model")
                 desk.sessions = parseSessions(body).map { row ->
                     if (desk.inflight.containsKey(row.id)) row.copy(running = true) else row
                 }
