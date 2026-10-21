@@ -51,20 +51,13 @@ class LinkDirectoryTest {
     }
 
     @Test
-    fun buttonsStayOnTheFixedList() {
-        assertEquals(4, remoteActions.size)
-        assertEquals(
-            setOf("status", "blackout", "blackout-dismiss", "lock"),
-            remoteActions.map { it.first }.toSet(),
-        )
-        assertTrue(remoteActions.none { it.first == "shell" || it.first == "quit" || it.first == "wheel-vertical" || it.first == "finder-follow" })
-    }
-
-    @Test
-    fun everyButtonHasOneGroup() {
-        val grouped = remoteGroups.flatMap { it.second }
-        assertEquals(grouped.size, grouped.toSet().size)
-        assertEquals(remoteActions.map { it.first }.toSet(), grouped.toSet())
+    fun mappedButtonOnlyCarriesItsId() {
+        assertEquals(setOf("button_id"), remotePressFields("abc").keys)
+        assertEquals("abc", remotePressFields("abc")["button_id"])
+        assertNull(visibleRemoteButton("  ", "锁屏", "", "lock"))
+        assertNull(visibleRemoteButton("abc", "  ", "", "lock"))
+        val button = visibleRemoteButton(" abc ", " 锁屏 ", " 离开 ", " lock ")
+        assertEquals(RemoteButton("abc", "锁屏", "离开", "lock"), button)
     }
 
     @Test

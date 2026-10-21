@@ -26,25 +26,70 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowForwardIos
 import androidx.compose.material.icons.automirrored.outlined.Article
+import androidx.compose.material.icons.outlined.AddCircle
+import androidx.compose.material.icons.outlined.Bookmark
+import androidx.compose.material.icons.outlined.Bolt
+import androidx.compose.material.icons.outlined.Brush
+import androidx.compose.material.icons.outlined.Build
+import androidx.compose.material.icons.outlined.CalendarMonth
+import androidx.compose.material.icons.outlined.Cancel
+import androidx.compose.material.icons.outlined.Chat
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.Code
 import androidx.compose.material.icons.outlined.DataObject
 import androidx.compose.material.icons.outlined.DarkMode
-import androidx.compose.material.icons.outlined.LightMode
-import androidx.compose.material.icons.outlined.Lock
+import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.Description
+import androidx.compose.material.icons.outlined.Email
 import androidx.compose.material.icons.outlined.ErrorOutline
+import androidx.compose.material.icons.outlined.Favorite
+import androidx.compose.material.icons.outlined.Flag
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.FolderOff
+import androidx.compose.material.icons.outlined.Handyman
+import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.Image
+import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.InsertDriveFile
+import androidx.compose.material.icons.outlined.Key
+import androidx.compose.material.icons.outlined.Keyboard
+import androidx.compose.material.icons.outlined.Label
+import androidx.compose.material.icons.outlined.LightMode
+import androidx.compose.material.icons.outlined.Link
+import androidx.compose.material.icons.outlined.Lock
+import androidx.compose.material.icons.outlined.Map
+import androidx.compose.material.icons.outlined.Mic
+import androidx.compose.material.icons.outlined.Monitor
 import androidx.compose.material.icons.outlined.MonitorHeart
+import androidx.compose.material.icons.outlined.MusicNote
+import androidx.compose.material.icons.outlined.Notifications
+import androidx.compose.material.icons.outlined.Pause
+import androidx.compose.material.icons.outlined.Person
+import androidx.compose.material.icons.outlined.Phone
+import androidx.compose.material.icons.outlined.PhotoCamera
+import androidx.compose.material.icons.outlined.PlayArrow
+import androidx.compose.material.icons.outlined.Public
+import androidx.compose.material.icons.outlined.Schedule
+import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.Shield
+import androidx.compose.material.icons.outlined.Star
+import androidx.compose.material.icons.outlined.Stop
+import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material.icons.outlined.TouchApp
+import androidx.compose.material.icons.outlined.Videocam
+import androidx.compose.material.icons.outlined.Visibility
+import androidx.compose.material.icons.outlined.VolumeUp
+import androidx.compose.material.icons.outlined.Wifi
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -237,23 +282,89 @@ private fun fileTone(ext: String): Tone = when (ext) {
 
 private data class ActionLook(val icon: ImageVector, val hint: String)
 
-private val actionLooks = mapOf(
-    "status" to ActionLook(Icons.Outlined.MonitorHeart, "查看这台 Mac"),
-    "blackout" to ActionLook(Icons.Outlined.DarkMode, "立刻遮住屏幕"),
-    "blackout-dismiss" to ActionLook(Icons.Outlined.LightMode, "揭掉已经遮住的屏幕"),
-    "lock" to ActionLook(Icons.Outlined.Lock, "离开时锁上"),
-)
+private fun remoteIcon(id: String): ImageVector = when (id) {
+    "moon" -> Icons.Outlined.DarkMode
+    "sun" -> Icons.Outlined.LightMode
+    "lock" -> Icons.Outlined.Lock
+    "heart" -> Icons.Outlined.Favorite
+    "display" -> Icons.Outlined.Monitor
+    "keyboard" -> Icons.Outlined.Keyboard
+    "terminal" -> Icons.Outlined.Terminal
+    "folder" -> Icons.Outlined.Folder
+    "document" -> Icons.Outlined.Description
+    "bolt" -> Icons.Outlined.Bolt
+    "bell" -> Icons.Outlined.Notifications
+    "camera" -> Icons.Outlined.PhotoCamera
+    "wifi" -> Icons.Outlined.Wifi
+    "speaker" -> Icons.Outlined.VolumeUp
+    "play" -> Icons.Outlined.PlayArrow
+    "pause" -> Icons.Outlined.Pause
+    "stop" -> Icons.Outlined.Stop
+    "trash" -> Icons.Outlined.Delete
+    "star" -> Icons.Outlined.Star
+    "flag" -> Icons.Outlined.Flag
+    "tag" -> Icons.Outlined.Label
+    "bookmark" -> Icons.Outlined.Bookmark
+    "clock" -> Icons.Outlined.Schedule
+    "calendar" -> Icons.Outlined.CalendarMonth
+    "map" -> Icons.Outlined.Map
+    "house" -> Icons.Outlined.Home
+    "gear" -> Icons.Outlined.Settings
+    "info" -> Icons.Outlined.Info
+    "checkmark" -> Icons.Outlined.CheckCircle
+    "xmark" -> Icons.Outlined.Cancel
+    "plus" -> Icons.Outlined.AddCircle
+    "person" -> Icons.Outlined.Person
+    "message" -> Icons.Outlined.Chat
+    "phone" -> Icons.Outlined.Phone
+    "mail" -> Icons.Outlined.Email
+    "link" -> Icons.Outlined.Link
+    "eye" -> Icons.Outlined.Visibility
+    "hammer" -> Icons.Outlined.Handyman
+    "wrench" -> Icons.Outlined.Build
+    "paintbrush" -> Icons.Outlined.Brush
+    "photo" -> Icons.Outlined.Image
+    "music" -> Icons.Outlined.MusicNote
+    "microphone" -> Icons.Outlined.Mic
+    "video" -> Icons.Outlined.Videocam
+    "globe" -> Icons.Outlined.Public
+    "shield" -> Icons.Outlined.Shield
+    "key" -> Icons.Outlined.Key
+    else -> Icons.Outlined.TouchApp
+}
 
-private val groupTones = listOf(Tone.Info, Tone.Good, Tone.Warn)
+@Composable
+private fun SectionTabs(selected: String, onSelect: (String) -> Unit) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        listOf("windows" to "窗口", "buttons" to "映射").forEach { (id, title) ->
+            val on = selected == id
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(if (on) Sky else Color(0xFFF3F1EA))
+                    .clickable { onSelect(id) }
+                    .padding(vertical = 9.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(title, color = if (on) Color.White else Ink, style = MaterialTheme.typography.labelLarge)
+            }
+        }
+    }
+}
 
 @Composable
 fun ControlTab(controller: RemoteController, link: AppLink, online: Boolean?) {
-    val titles = remoteActions.toMap()
+    var section by remember(link.id) { mutableStateOf("windows") }
     val busyAction = controller.pendingAction[link.id]
     val enabled = online == true && busyAction == null
     val displays = controller.desktopLists[link.id].orEmpty()
-    LaunchedEffect(link.id, online) {
-        if (online == true) controller.refreshDesktops(link.id)
+    val buttons = controller.buttonLists[link.id].orEmpty()
+    val buttonsKnown = controller.buttonLists.containsKey(link.id)
+    LaunchedEffect(link.id, online, section) {
+        if (online != true) return@LaunchedEffect
+        if (section == "windows") controller.refreshDesktops(link.id)
+        else controller.refreshButtons(link.id)
     }
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -265,58 +376,73 @@ fun ControlTab(controller: RemoteController, link: AppLink, online: Boolean?) {
                 title = controller.lastAction[link.id],
                 result = controller.lastResult[link.id],
                 ok = controller.lastOk[link.id],
-                busy = busyAction != null,
+                busy = busyAction != null && busyAction != "desktops" && busyAction != "remote-buttons",
             )
         }
+        item { SectionTabs(section) { section = it } }
         if (online != true) {
             item { Banner(if (online == null) "正在连接这台 Mac…" else "这台 Mac 离线，遥控暂时不可用", if (online == null) Tone.Info else Tone.Bad) }
         }
-        remoteGroups.forEachIndexed { groupIndex, (groupTitle, actions) ->
-            item { SectionTitle(groupTitle, modifier = Modifier.padding(top = 6.dp)) }
-            actions.chunked(2).forEach { pair ->
-                item {
-                    Row(
-                        modifier = Modifier.fillMaxWidth().height(IntrinsicSize.Min),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    ) {
-                        pair.forEach { action ->
-                            val look = actionLooks[action] ?: ActionLook(Icons.Outlined.TouchApp, "")
-                            ActionTile(
-                                title = titles[action] ?: action,
-                                look = look,
-                                tone = groupTones[groupIndex % groupTones.size],
-                                busy = busyAction == action,
-                                enabled = enabled,
-                                modifier = Modifier.weight(1f).fillMaxHeight(),
-                                onClick = { controller.send(action, titles[action] ?: action) },
-                            )
+        if (section == "windows") {
+            when {
+                online != true -> Unit
+                displays.isNotEmpty() -> {
+                    val showDisplay = displays.size > 1
+                    displays.forEach { display ->
+                        if (showDisplay && display.title.isNotBlank()) {
+                            item { Text(display.title, style = MaterialTheme.typography.labelLarge, color = Slate) }
                         }
-                        if (pair.size == 1) Spacer(Modifier.weight(1f))
-                    }
-                }
-            }
-        }
-        item { SectionTitle("桌面与窗口", modifier = Modifier.padding(top = 6.dp)) }
-        when {
-            online != true -> Unit
-            displays.isNotEmpty() -> {
-                val showDisplay = displays.size > 1
-                displays.forEach { display ->
-                    if (showDisplay && display.title.isNotBlank()) {
-                        item { Text(display.title, style = MaterialTheme.typography.labelLarge, color = Slate) }
-                    }
-                    display.spaces.forEach { space ->
-                        item {
-                            DesktopSpaceCard(space, enabled) { window ->
-                                if (window == null) controller.switchDesktop(link.id, space)
-                                else controller.switchWindow(link.id, space, window)
+                        display.spaces.forEach { space ->
+                            item {
+                                DesktopSpaceCard(space, enabled) { window ->
+                                    if (window == null) controller.switchDesktop(link.id, space)
+                                    else controller.switchWindow(link.id, space, window)
+                                }
                             }
                         }
                     }
                 }
+                controller.desktopNotice[link.id].orEmpty().isBlank() -> item { LoadingState("正在读取桌面…") }
+                else -> item { Banner(controller.desktopNotice[link.id].orEmpty(), Tone.Bad) }
             }
-            controller.desktopNotice[link.id].orEmpty().isBlank() -> item { LoadingState("正在读取桌面…") }
-            else -> item { Banner(controller.desktopNotice[link.id].orEmpty(), Tone.Bad) }
+        } else {
+            when {
+                online != true -> Unit
+                buttons.isNotEmpty() -> {
+                    buttons.chunked(2).forEach { pair ->
+                        item {
+                            Row(
+                                modifier = Modifier.fillMaxWidth().height(IntrinsicSize.Min),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            ) {
+                                pair.forEach { button ->
+                                    ActionTile(
+                                        title = button.name,
+                                        look = ActionLook(remoteIcon(button.icon), button.detail),
+                                        tone = Tone.Info,
+                                        busy = controller.pressedButton[link.id] == button.id,
+                                        enabled = enabled,
+                                        modifier = Modifier.weight(1f).fillMaxHeight(),
+                                        onClick = { controller.pressButton(link.id, button) },
+                                    )
+                                }
+                                if (pair.size == 1) Spacer(Modifier.weight(1f))
+                            }
+                        }
+                    }
+                }
+                controller.buttonNotice[link.id].orEmpty().isNotBlank() -> item {
+                    Banner(controller.buttonNotice[link.id].orEmpty(), Tone.Bad)
+                }
+                !buttonsKnown -> item { LoadingState("正在读取按钮…") }
+                else -> item {
+                    Text(
+                        "还没有按钮。在 Mac 的「输入 → 遥控」里新增。",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Slate,
+                    )
+                }
+            }
         }
     }
 }
@@ -432,7 +558,9 @@ private fun ActionTile(
             Spacer(Modifier.width(10.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(title, style = MaterialTheme.typography.titleSmall, color = Ink, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                Text(look.hint, style = MaterialTheme.typography.bodySmall, color = SlateLight, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                if (look.hint.isNotBlank()) {
+                    Text(look.hint, style = MaterialTheme.typography.bodySmall, color = SlateLight, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
             }
         }
     }

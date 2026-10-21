@@ -82,16 +82,32 @@ fun socketURL(relay: String, token: String): String {
     return "$base/v1/ws?token=$token"
 }
 
-val remoteActions = listOf(
-    "status" to "设备状态",
-    "blackout" to "临时黑屏",
-    "blackout-dismiss" to "取消黑屏",
-    "lock" to "锁定屏幕",
-)
+data class RemoteButton(val id: String, val name: String, val detail: String, val icon: String)
 
-val remoteGroups = listOf(
-    "屏幕" to listOf("status", "blackout", "blackout-dismiss", "lock"),
-)
+fun visibleRemoteButton(id: String, name: String, detail: String, icon: String): RemoteButton? {
+    val trimmed = id.trim()
+    val title = name.trim()
+    if (trimmed.isEmpty() || title.isEmpty()) return null
+    return RemoteButton(trimmed, title, detail.trim(), icon.trim())
+}
+
+fun remotePressFields(id: String): Map<String, String> = mapOf("button_id" to id)
+
+fun parseRemoteButtons(body: JSONObject): List<RemoteButton> {
+    val rows = body.optJSONArray("buttons") ?: return emptyList()
+    return buildList {
+        for (index in 0 until rows.length()) {
+            val row = rows.optJSONObject(index) ?: continue
+            val button = visibleRemoteButton(
+                row.optString("id"),
+                row.optString("name"),
+                row.optString("detail"),
+                row.optString("icon"),
+            ) ?: continue
+            add(button)
+        }
+    }
+}
 
 data class RemoteWindow(val title: String, val windowId: Long, val pid: Int, val front: Boolean)
 

@@ -80,6 +80,10 @@ class RemoteController(
     val lastResult = mutableStateMapOf<String, String>()
     val lastOk = mutableStateMapOf<String, Boolean>()
     val desktopLists = mutableStateMapOf<String, List<RemoteDisplay>>()
+    val buttonLists = mutableStateMapOf<String, List<RemoteButton>>()
+    val buttonNotice = mutableStateMapOf<String, String>()
+    val pressedButton = mutableStateMapOf<String, String>()
+    private val followUp = mutableMapOf<String, () -> Unit>()
     val desktopNotice = mutableStateMapOf<String, String>()
     private val desks = linkedMapOf<String, AppDesk>()
     private val appWait = linkedMapOf<String, AppWait>()
@@ -378,6 +382,14 @@ class RemoteController(
         deliver(id, "desktops", "桌面与窗口", null, quiet = true)
     }
 
+    fun refreshButtons(id: String) {
+        deliver(id, "remote-buttons", "遥控按钮", null, quiet = true)
+    }
+
+    fun pressButton(id: String, button: RemoteButton) {
+        deliver(id, "remote-press", button.name, JSONObject().put("button_id", button.id))
+    }
+
     fun switchDesktop(id: String, space: RemoteSpace) {
         val target = JSONObject()
             .put("display_id", space.displayId)
@@ -396,12 +408,16 @@ class RemoteController(
 
     private fun deliver(id: String, action: String, title: String, target: JSONObject?, quiet: Boolean = false) {
         if (directory.all().none { it.id == id }) return
-        if (pending[id] != null) return
+        if (pending[id] != null) {
+            if (quiet) followUp[id] = { deliver(id, action, title, target, quiet = true) }
+            return
+        }
         val socket = sockets[id]
         if (!quiet) lastAction[id] = title
         if (socket == null || online[id] != true) {
             if (quiet) {
-                desktopNotice[id] = "这台 Mac 还没连上"
+                val note = "这台 Mac 还没连上"
+                if (action == "remote-buttons") buttonNotice[id] = note else desktopNotice[id] = note
             } else {
                 lastResult[id] = "这台 Mac 还没连上"
                 lastOk[id] = false
@@ -411,6 +427,7 @@ class RemoteController(
         val requestId = UUID.randomUUID().toString()
         pending[id] = requestId
         pendingAction[id] = action
+        if (action == "remote-press") pressedButton[id] = target?.optString("button_id").orEmpty()
         if (!quiet) {
             lastResult[id] = "正在执行…"
             lastOk.remove(id)
@@ -427,12 +444,16 @@ class RemoteController(
                 val timedOut = pendingAction[id]
                 pending.remove(id)
                 pendingAction.remove(id)
-                if (timedOut == "desktops") {
-                    desktopNotice[id] = "Mac 没有回应，请稍后再试"
-                } else {
-                    lastResult[id] = "Mac 没有回应，请稍后再试"
-                    lastOk[id] = false
+                pressedButton.remove(id)
+                when (timedOut) {
+                    "desktops" -> desktopNotice[id] = "Mac 没有回应，请稍后再试"
+                    "remote-buttons" -> buttonNotice[id] = "Mac 没有回应，请稍后再试"
+                    else -> {
+                        lastResult[id] = "Mac 没有回应，请稍后再试"
+                        lastOk[id] = false
+                    }
                 }
+                followUp.remove(id)?.invoke()
             }
         }, COMMAND_TIMEOUT_MS)
     }
@@ -540,6 +561,10 @@ class RemoteController(
         retryDelay.remove(id)
         pending.remove(id)
         pendingAction.remove(id)
+        followUp.remove(id)
+        pressedButton.remove(id)
+        buttonLists.remove(id)
+        buttonNotice.remove(id)
         desks.remove(id)
         directory.remove(id)
         if (selectedId == id) selectedId = directory.currentId
@@ -630,6 +655,8 @@ class RemoteController(
             appWait.remove(requestId)
             failApp(wait, requestId, "和这台 Mac 的连接断开了")
         }
+        followUp.remove(linkId)
+        pressedButton.remove(linkId)
         if (pending.remove(linkId) != null) {
             pendingAction.remove(linkId)
             lastResult[linkId] = "和这台 Mac 的连接断开了"
@@ -647,8 +674,9 @@ class RemoteController(
                 val action = pendingAction[linkId]
                 pending.remove(linkId)
                 pendingAction.remove(linkId)
+                pressedButton.remove(linkId)
                 val ok = message.optBoolean("ok")
-                if (action != "desktops") {
+                if (action != "desktops" && action != "remote-buttons") {
                     lastResult[linkId] = message.optString("text").ifBlank { if (ok) "已完成" else "失败" }
                     lastOk[linkId] = ok
                 }
@@ -661,7 +689,17 @@ class RemoteController(
                         desktopNotice[linkId] = message.optString("text").ifBlank { "无法读取桌面" }
                     }
                 }
+                if (action == "remote-buttons") {
+                    val body = message.optJSONObject("body")
+                    if (ok && body != null) {
+                        buttonLists[linkId] = parseRemoteButtons(body)
+                        buttonNotice[linkId] = ""
+                    } else {
+                        buttonNotice[linkId] = message.optString("text").ifBlank { "无法读取按钮" }
+                    }
+                }
                 if (action == "desktop-switch") refreshDesktops(linkId)
+                followUp.remove(linkId)?.invoke()
             }
             "error" -> {
                 val requestId = message.optString("request_id")
@@ -672,8 +710,10 @@ class RemoteController(
                 } else if (pending[linkId] != null) {
                     pending.remove(linkId)
                     pendingAction.remove(linkId)
+                    pressedButton.remove(linkId)
                     lastResult[linkId] = text
                     lastOk[linkId] = false
+                    followUp.remove(linkId)?.invoke()
                 }
             }
             "link_revoked" -> {

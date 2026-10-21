@@ -34,6 +34,8 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.runtime.snapshotFlow
+import kotlinx.coroutines.flow.first
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -68,6 +70,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
@@ -150,7 +153,7 @@ fun SessionsTab(
         } else if (desk.installed != null) {
             item {
                 Panel(padding = PaddingValues(horizontal = 18.dp, vertical = 8.dp)) {
-                    ShortcutRow(Icons.Outlined.Tune, Tone.Info, "遥控这台 Mac", "黑屏、锁屏，以及切换桌面和窗口") {
+                    ShortcutRow(Icons.Outlined.Tune, Tone.Info, "遥控这台 Mac", "切换桌面和窗口，以及你配好的按钮") {
                         controller.showTab(link.id, "buttons")
                     }
                 }
@@ -415,7 +418,7 @@ fun ChatScreen(controller: RemoteController, link: AppLink, desk: AppDesk, sessi
             when {
                 desk.turnsLoading && desk.turns.isEmpty() -> LoadingState("正在读取对话…", Modifier.align(Alignment.Center))
                 desk.turns.isEmpty() && !desk.sending -> ChatWelcome(onPick = { draft = it })
-                else -> MessageList(desk) { span ->
+                else -> MessageList(desk.openSession?.id ?: "", desk) { span ->
                     if (span.folder) {
                         controller.openDirectory(link.id, span.path)
                         showFiles = true
@@ -669,16 +672,20 @@ private fun ChatWelcome(onPick: (String) -> Unit) {
 }
 
 @Composable
-private fun MessageList(desk: AppDesk, onOpenPath: (PathSpan) -> Unit) {
+private fun MessageList(sessionID: String, desk: AppDesk, onOpenPath: (PathSpan) -> Unit) {
     val listState = rememberLazyListState()
     val blocks = chatBlocks(desk.turns)
     val tail = blocks.lastIndex + if (desk.sending) 1 else 0
-    LaunchedEffect(desk.turns.size, desk.sending) {
-        if (tail >= 0) listState.animateScrollToItem(tail)
+    var placed by remember(sessionID) { mutableStateOf(false) }
+    LaunchedEffect(sessionID, desk.turns.size, desk.sending) {
+        if (tail < 0) return@LaunchedEffect
+        snapshotFlow { listState.layoutInfo.totalItemsCount }.first { it > tail }
+        listState.scrollToItem(tail)
+        placed = true
     }
     LazyColumn(
         state = listState,
-        modifier = Modifier.fillMaxSize(),
+        modifier = Modifier.fillMaxSize().alpha(if (placed || tail < 0) 1f else 0f),
         contentPadding = PaddingValues(horizontal = 14.dp, vertical = 16.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
