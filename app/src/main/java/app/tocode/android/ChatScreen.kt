@@ -73,6 +73,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
@@ -405,6 +406,11 @@ fun ChatScreen(controller: RemoteController, link: AppLink, desk: AppDesk, sessi
     var draft by rememberSaveable(session.id) { mutableStateOf("") }
     val attachments = remember(session.id) { mutableStateListOf<ChatAttachment>() }
     var uploading by remember(session.id) { mutableStateOf(false) }
+    DisposableEffect(session.id) {
+        onDispose {
+            attachments.toList().forEach { controller.releaseAttachment(link.id, it) }
+        }
+    }
     var pinned by remember(session.id) { mutableStateOf<Int?>(null) }
     val restore = desk.restoreDraft
     LaunchedEffect(restore) {
@@ -420,10 +426,10 @@ fun ChatScreen(controller: RemoteController, link: AppLink, desk: AppDesk, sessi
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
-        takeAttachment(context, scope, uri, "image", attachments, desk)
+        takeAttachment(context, scope, uri, "image", attachments, desk, link.id, controller)
     }
     val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        takeAttachment(context, scope, uri, "file", attachments, desk)
+        takeAttachment(context, scope, uri, "file", attachments, desk, link.id, controller)
     }
     var confirmDelete by remember { mutableStateOf(false) }
     var managing by remember { mutableStateOf(false) }
@@ -473,7 +479,11 @@ fun ChatScreen(controller: RemoteController, link: AppLink, desk: AppDesk, sessi
             draft = draft,
             onDraft = { draft = it },
             attachments = attachments,
-            onRemove = { id -> attachments.removeAll { it.id == id } },
+            onRemove = { id ->
+                val file = attachments.find { it.id == id } ?: return@Composer
+                attachments.removeAll { it.id == id }
+                controller.releaseAttachment(link.id, file)
+            },
             onPickImage = {
                 if (attachments.size >= ATTACHMENT_COUNT) desk.notice = "一次最多带 10 个文件"
                 else imagePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
@@ -504,6 +514,7 @@ fun ChatScreen(controller: RemoteController, link: AppLink, desk: AppDesk, sessi
                 val started = controller.sendWithAttachments(link.id, draft, attachments.toList()) { ok, landed ->
                     uploading = false
                     if (ok) {
+                        attachments.forEach { controller.finishAttachment(it.id) }
                         draft = ""
                         attachments.clear()
                         pinned = null
@@ -986,12 +997,12 @@ private fun Composer(
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Text(
-                            file.name,
+                            attachmentLabel(file),
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                             style = MaterialTheme.typography.bodySmall,
-                            color = Ink,
-                            modifier = Modifier.widthIn(max = 160.dp),
+                            color = if (file.failed && file.hold.isNullOrBlank() && file.landed.isNullOrBlank()) Coral else Ink,
+                            modifier = Modifier.widthIn(max = 180.dp),
                         )
                         Box(
                             modifier = Modifier
@@ -1121,6 +1132,8 @@ private fun takeAttachment(
     kind: String,
     attachments: SnapshotStateList<ChatAttachment>,
     desk: AppDesk,
+    linkId: String,
+    controller: RemoteController,
 ) {
     if (uri == null) return
     if (attachments.size >= ATTACHMENT_COUNT) {
@@ -1134,7 +1147,13 @@ private fun takeAttachment(
             is AttachmentRead.Failed -> desk.notice = read.message
             is AttachmentRead.Ready -> {
                 if (attachments.size >= ATTACHMENT_COUNT) desk.notice = "一次最多带 10 个文件"
-                else attachments.add(read.file)
+                else {
+                    attachments.add(read.file)
+                    controller.beginAttachment(linkId, read.file) { updated ->
+                        val index = attachments.indexOfFirst { it.id == updated.id }
+                        if (index >= 0) attachments[index] = updated
+                    }
+                }
             }
         }
     }

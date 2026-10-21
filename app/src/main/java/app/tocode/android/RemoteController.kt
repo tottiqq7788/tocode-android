@@ -65,7 +65,16 @@ private data class AppWait(
     val offset: Int = 0,
 )
 
-private data class FileWait(val linkId: String, val callback: (String?) -> Unit)
+private data class FileOutcome(val path: String? = null, val hold: String? = null, val dropped: Boolean = false)
+
+private data class FileWait(val linkId: String, val quiet: Boolean, val callback: (FileOutcome?) -> Unit)
+
+private class HeldFile(
+    var file: ChatAttachment,
+    val listeners: MutableList<(ChatAttachment) -> Unit> = mutableListOf(),
+    var running: Boolean = false,
+    var released: Boolean = false,
+)
 
 class RemoteController(
     private val directory: LinkDirectory,
@@ -94,6 +103,9 @@ class RemoteController(
     private val appWait = linkedMapOf<String, AppWait>()
     private val fileWait = linkedMapOf<String, FileWait>()
     private val attachmentBusy = mutableSetOf<String>()
+    private val heldFiles = linkedMapOf<String, HeldFile>()
+    private val fileJobs = ArrayDeque<() -> Unit>()
+    private var fileJobActive = false
     private val sockets = linkedMapOf<String, WebSocket>()
     private val retryDelay = linkedMapOf<String, Long>()
     private val statusRetry = mutableSetOf<String>()
@@ -345,6 +357,37 @@ class RemoteController(
         return true
     }
 
+    fun beginAttachment(id: String, file: ChatAttachment, onChange: (ChatAttachment) -> Unit) {
+        val existing = heldFiles[file.id]
+        if (existing != null) {
+            existing.listeners.add(onChange)
+            if (!existing.running) onChange(existing.file)
+            if (existing.file.hold.isNullOrBlank() && existing.file.landed.isNullOrBlank() && !existing.running) {
+                startHold(id, existing)
+            }
+            return
+        }
+        val held = HeldFile(file)
+        held.listeners.add(onChange)
+        heldFiles[file.id] = held
+        startHold(id, held)
+    }
+
+    fun releaseAttachment(id: String, file: ChatAttachment) {
+        val held = heldFiles.remove(file.id)
+        if (held != null) held.released = true
+        val current = held?.file ?: file
+        val hold = current.hold
+        if (hold.isNullOrBlank() || !current.landed.isNullOrBlank()) return
+        enqueueFile {
+            dropHold(id, hold)
+        }
+    }
+
+    fun finishAttachment(attachmentId: String) {
+        heldFiles.remove(attachmentId)
+    }
+
     fun sendWithAttachments(
         id: String,
         text: String,
@@ -367,11 +410,11 @@ class RemoteController(
             onFinished(sendChat(id, text), emptyList())
             return true
         }
-        uploadAt(id, text, files, 0, MutableList(files.size) { files[it].landed }, onFinished)
+        deliver(id, text, files, 0, MutableList(files.size) { latestAttachment(files[it]).landed }, onFinished)
         return true
     }
 
-    private fun uploadAt(
+    private fun deliver(
         id: String,
         text: String,
         files: List<ChatAttachment>,
@@ -395,54 +438,192 @@ class RemoteController(
             onFinished(sendChat(id, composed), paths.toList())
             return
         }
-        if (!paths[index].isNullOrBlank()) {
-            uploadAt(id, text, files, index + 1, paths, onFinished)
+        val file = latestAttachment(files[index])
+        if (!paths[index].isNullOrBlank() || !file.landed.isNullOrBlank()) {
+            if (paths[index].isNullOrBlank()) paths[index] = file.landed
+            deliver(id, text, files, index + 1, paths, onFinished)
             return
         }
-        sendProjectFile(id, files[index]) { saved ->
-            if (saved.isNullOrBlank()) {
+        ensureHold(id, file) { held ->
+            val hold = held?.hold
+            if (held == null || hold.isNullOrBlank()) {
                 attachmentBusy.remove(id)
                 onFinished(false, paths.toList())
-                return@sendProjectFile
+                return@ensureHold
             }
-            paths[index] = saved
-            uploadAt(id, text, files, index + 1, paths, onFinished)
+            enqueueFile {
+                placeHold(id, held) { saved ->
+                    if (saved.isNullOrBlank()) {
+                        onFinished(false, paths.toList())
+                        attachmentBusy.remove(id)
+                        return@placeHold
+                    }
+                    paths[index] = saved
+                    heldFiles[file.id]?.let { publish(it, held.copy(landed = saved, hold = null, bytes = ByteArray(0), failed = false)) }
+                    deliver(id, text, files, index + 1, paths, onFinished)
+                }
+            }
         }
     }
 
-    private fun sendProjectFile(id: String, file: ChatAttachment, onResult: (String?) -> Unit) {
-        val socket = sockets[id]
-        val project = desk(id).openProject
-        if (socket == null || online[id] != true || project == null) {
-            desk(id).notice = "这台 Mac 还没连上，正在重连…"
-            onResult(null)
+    private fun latestAttachment(file: ChatAttachment): ChatAttachment = heldFiles[file.id]?.file ?: file
+
+    private fun startHold(id: String, held: HeldFile) {
+        if (held.running || held.released || !held.file.hold.isNullOrBlank() || !held.file.landed.isNullOrBlank()) return
+        if (held.file.bytes.isEmpty()) {
+            publish(held, held.file.copy(failed = true))
             return
         }
-        if (file.bytes.isEmpty()) {
-            desk(id).notice = "这个文件是空的"
+        held.running = true
+        enqueueFile {
+            if (held.released) {
+                fileJobDone()
+                return@enqueueFile
+            }
+            val project = desk(id).openProject
+            if (project == null) {
+                desk(id).notice = "先进入一个项目"
+                held.running = false
+                publish(held, held.file.copy(failed = true))
+                fileJobDone()
+                return@enqueueFile
+            }
+            transmitHold(id, held.file, project.id) { outcome ->
+                held.running = false
+                val hold = outcome?.hold
+                if (hold.isNullOrBlank()) {
+                    publish(held, held.file.copy(failed = true))
+                    return@transmitHold
+                }
+                val staged = attachmentAfterHold(held.file, hold)
+                publish(held, staged)
+                if (held.released) enqueueFile { dropHold(id, hold) }
+            }
+        }
+    }
+
+    private fun ensureHold(id: String, file: ChatAttachment, then: (ChatAttachment?) -> Unit) {
+        val current = latestAttachment(file)
+        if (!current.hold.isNullOrBlank()) {
+            then(current)
+            return
+        }
+        val held = heldFiles[file.id] ?: HeldFile(file).also { heldFiles[file.id] = it }
+        lateinit var listener: (ChatAttachment) -> Unit
+        listener = { updated ->
+            val ready = !updated.hold.isNullOrBlank()
+            val gaveUp = updated.failed && !held.running
+            if (ready || gaveUp) {
+                held.listeners.remove(listener)
+                then(if (ready) updated else null)
+            }
+        }
+        held.listeners.add(listener)
+        if (!held.running) startHold(id, held)
+    }
+
+    private fun publish(held: HeldFile, file: ChatAttachment) {
+        held.file = file
+        held.listeners.toList().forEach { it(file) }
+    }
+
+    private fun enqueueFile(work: () -> Unit) {
+        fileJobs.add(work)
+        pumpFileJobs()
+    }
+
+    private fun pumpFileJobs() {
+        if (fileJobActive) return
+        val work = fileJobs.removeFirstOrNull() ?: return
+        fileJobActive = true
+        work()
+    }
+
+    private fun fileJobDone() {
+        fileJobActive = false
+        pumpFileJobs()
+    }
+
+    private fun transmitHold(id: String, file: ChatAttachment, projectId: String, onResult: (FileOutcome?) -> Unit) {
+        val socket = sockets[id]
+        if (socket == null || online[id] != true) {
+            desk(id).notice = "这台 Mac 还没连上，正在重连…"
             onResult(null)
+            fileJobDone()
             return
         }
         val requestId = UUID.randomUUID().toString()
-        fileWait[requestId] = FileWait(id, onResult)
         val body = JSONObject()
             .put("op", "project_file")
             .put("request_id", requestId)
             .put("name", file.name)
             .put("size", file.bytes.size)
             .put("kind", file.kind)
+            .put("hold", true)
             .put("profile", desk(id).profile)
-            .put("project_id", project.id)
+            .put("project_id", projectId)
         val queued = socket.send(body.toString()) && socket.send(file.bytes.toByteString())
         if (!queued) {
-            fileWait.remove(requestId)
             desk(id).notice = "文件没有送出去"
             onResult(null)
+            fileJobDone()
             return
+        }
+        trackFile(id, requestId, quiet = false, onResult)
+    }
+
+    private fun placeHold(id: String, file: ChatAttachment, onResult: (String?) -> Unit) {
+        val hold = file.hold
+        val project = desk(id).openProject
+        val socket = sockets[id]
+        if (hold.isNullOrBlank() || socket == null || online[id] != true || project == null) {
+            desk(id).notice = "这台 Mac 还没连上，正在重连…"
+            onResult(null)
+            fileJobDone()
+            return
+        }
+        val requestId = UUID.randomUUID().toString()
+        val body = JSONObject()
+            .put("op", "project_file_place")
+            .put("request_id", requestId)
+            .put("hold_id", hold)
+            .put("profile", desk(id).profile)
+            .put("project_id", project.id)
+        if (!socket.send(body.toString())) {
+            desk(id).notice = "文件没有送出去"
+            onResult(null)
+            fileJobDone()
+            return
+        }
+        trackFile(id, requestId, quiet = false) { outcome -> onResult(outcome?.path) }
+    }
+
+    private fun dropHold(id: String, hold: String) {
+        val socket = sockets[id]
+        if (socket == null || online[id] != true) {
+            fileJobDone()
+            return
+        }
+        val requestId = UUID.randomUUID().toString()
+        val body = JSONObject()
+            .put("op", "project_file_drop")
+            .put("request_id", requestId)
+            .put("hold_id", hold)
+        if (!socket.send(body.toString())) {
+            fileJobDone()
+            return
+        }
+        trackFile(id, requestId, quiet = true) { }
+    }
+
+    private fun trackFile(id: String, requestId: String, quiet: Boolean, onResult: (FileOutcome?) -> Unit) {
+        fileWait[requestId] = FileWait(id, quiet) { outcome ->
+            onResult(outcome)
+            fileJobDone()
         }
         main.postDelayed({
             val wait = fileWait.remove(requestId) ?: return@postDelayed
-            desk(wait.linkId).notice = "文件没有保存成功"
+            if (!wait.quiet) desk(wait.linkId).notice = "文件没有保存成功"
             wait.callback(null)
         }, FILE_TIMEOUT_MS)
     }
@@ -799,10 +980,12 @@ class RemoteController(
             appWait.remove(requestId)
             failApp(wait, requestId, "和这台 Mac 的连接断开了")
         }
+        fileJobs.clear()
         val lostFiles = fileWait.filterValues { it.linkId == linkId }.keys.toList()
         lostFiles.forEach { requestId ->
             fileWait.remove(requestId)?.callback?.invoke(null)
         }
+        fileJobActive = false
         if (lostFiles.isNotEmpty()) desk(linkId).notice = "和这台 Mac 的连接断开了"
         followUp.remove(linkId)
         pressedButton.remove(linkId)
@@ -821,10 +1004,16 @@ class RemoteController(
                 val requestId = message.optString("request_id")
                 val wait = fileWait.remove(requestId) ?: return
                 val path = message.optString("path")
+                val hold = message.optString("hold_id")
+                val dropped = message.optBoolean("dropped")
                 if (message.optBoolean("ok") && path.isNotBlank()) {
-                    wait.callback(path)
+                    wait.callback(FileOutcome(path = path))
+                } else if (message.optBoolean("ok") && hold.isNotBlank()) {
+                    wait.callback(FileOutcome(hold = hold))
+                } else if (message.optBoolean("ok") && dropped) {
+                    wait.callback(FileOutcome(dropped = true))
                 } else {
-                    desk(wait.linkId).notice = message.optString("text").ifBlank { "文件没有保存成功" }
+                    if (!wait.quiet) desk(wait.linkId).notice = message.optString("text").ifBlank { "文件没有保存成功" }
                     wait.callback(null)
                 }
             }
@@ -866,7 +1055,7 @@ class RemoteController(
                 val text = message.optString("message").ifBlank { "失败" }
                 val file = if (requestId.isNotBlank()) fileWait.remove(requestId) else null
                 if (file != null) {
-                    desk(file.linkId).notice = text
+                    if (!file.quiet) desk(file.linkId).notice = text
                     file.callback(null)
                     return
                 }

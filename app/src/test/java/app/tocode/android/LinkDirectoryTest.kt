@@ -182,6 +182,15 @@ class LinkDirectoryTest {
         )
         assertEquals("对话附件-图片/a.jpg", marked[0].landed)
         assertEquals(0, marked[0].bytes.size)
+        val fresh = ChatAttachment("2", "965.jpg", "image", byteArrayOf(1, 2, 3))
+        assertEquals("upload", attachmentTransfer(fresh))
+        assertEquals("965.jpg · 上传中", attachmentLabel(fresh))
+        val held = attachmentAfterHold(fresh, "11111111-1111-1111-1111-111111111111")
+        assertEquals("place", attachmentTransfer(held))
+        assertEquals("965.jpg", attachmentLabel(held))
+        assertEquals(0, held.bytes.size)
+        assertEquals("ready", attachmentTransfer(held.copy(landed = "对话附件-图片/965.jpg")))
+        assertEquals("965.jpg · 没传上", attachmentLabel(fresh.copy(failed = true)))
     }
 
     @Test

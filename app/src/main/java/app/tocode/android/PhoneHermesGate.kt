@@ -83,7 +83,24 @@ data class ChatAttachment(
     val kind: String,
     val bytes: ByteArray,
     val landed: String? = null,
+    val hold: String? = null,
+    val failed: Boolean = false,
 )
+
+/** 已经落盘的不用再传。已经暂存的发送时只落盘。其余才上传。 */
+fun attachmentTransfer(file: ChatAttachment): String = when {
+    !file.landed.isNullOrBlank() -> "ready"
+    !file.hold.isNullOrBlank() -> "place"
+    else -> "upload"
+}
+
+fun attachmentLabel(file: ChatAttachment): String = when (attachmentTransfer(file)) {
+    "ready", "place" -> file.name
+    else -> if (file.failed) "${file.name} · 没传上" else "${file.name} · 上传中"
+}
+
+fun attachmentAfterHold(file: ChatAttachment, hold: String): ChatAttachment =
+    file.copy(hold = hold, bytes = ByteArray(0), failed = false)
 
 fun attachmentFileName(display: String, fallback: String): String {
     val name = display.trim()
