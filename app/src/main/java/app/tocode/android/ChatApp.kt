@@ -1,5 +1,6 @@
 package app.tocode.android
 
+import android.content.Intent
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.ScrollState
@@ -36,9 +37,11 @@ import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.LaptopMac
+import androidx.compose.material.icons.outlined.BugReport
 import androidx.compose.material.icons.outlined.LinkOff
 import androidx.compose.material.icons.outlined.QrCodeScanner
 import androidx.compose.material.icons.outlined.Tune
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -593,6 +596,7 @@ private fun MacSheet(
     onUnlink: (AppLink) -> Unit,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val context = LocalContext.current
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState, containerColor = Paper) {
         Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(bottom = 24.dp)) {
             Text("我的 Mac", style = MaterialTheme.typography.titleLarge, color = Ink)
@@ -651,6 +655,26 @@ private fun MacSheet(
                 Icon(Icons.Outlined.Add, contentDescription = null, tint = Pine)
                 Spacer(Modifier.width(8.dp))
                 Text("绑定新的 Mac", style = MaterialTheme.typography.labelLarge, color = Pine)
+            }
+            Spacer(Modifier.height(8.dp))
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(16.dp))
+                    .border(1.dp, Hairline, RoundedCornerShape(16.dp))
+                    .clickable {
+                        val intent = DiagnosticLog.exportZip(context)
+                        if (intent != null) {
+                            context.startActivity(Intent.createChooser(intent, "导出诊断日志"))
+                        }
+                    }
+                    .padding(vertical = 15.dp),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(Icons.Outlined.BugReport, contentDescription = null, tint = Slate)
+                Spacer(Modifier.width(8.dp))
+                Text("导出诊断日志", style = MaterialTheme.typography.labelLarge, color = Slate)
             }
         }
     }

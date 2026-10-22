@@ -8,10 +8,22 @@ import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.lifecycle.DefaultLifecycleObserver
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.ProcessLifecycleOwner
 import java.io.File
 
 class MainActivity : ComponentActivity() {
     private var controller: RemoteController? = null
+    private val processObserver = object : DefaultLifecycleObserver {
+        override fun onStart(owner: LifecycleOwner) {
+            DiagnosticLog.event("lifecycle.fg")
+        }
+
+        override fun onStop(owner: LifecycleOwner) {
+            DiagnosticLog.event("lifecycle.bg")
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge(
@@ -19,6 +31,8 @@ class MainActivity : ComponentActivity() {
             navigationBarStyle = SystemBarStyle.light(Color.TRANSPARENT, Color.TRANSPARENT),
         )
         super.onCreate(savedInstanceState)
+        DiagnosticLog.bind(applicationContext)
+        ProcessLifecycleOwner.get().lifecycle.addObserver(processObserver)
         val controller = shared ?: run {
             prepareRemoteLayout(filesDir)
             val disk = LinkDisk(stateFile = File(filesDir, "phone-state.json"))
@@ -58,6 +72,11 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         controller?.ensureConnected()
         refreshSessionWidgets(applicationContext)
+    }
+
+    override fun onDestroy() {
+        ProcessLifecycleOwner.get().lifecycle.removeObserver(processObserver)
+        super.onDestroy()
     }
 
     private fun openIntent(intent: Intent?) {

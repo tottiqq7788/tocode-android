@@ -1181,6 +1181,17 @@ class RemoteController(
         }
         val requestId = UUID.randomUUID().toString()
         appWait[requestId] = AppWait(id, kind, sessionId, projectId, path, offset, cursor, inline)
+        DiagnosticLog.event(
+            "app.send",
+            linkId = id,
+            detail = mapOf(
+                "kind" to kind,
+                "request_id" to requestId,
+                "has_path" to path.isNotEmpty(),
+                "has_text" to text.isNotEmpty(),
+                "quiet" to quiet,
+            ),
+        )
         val body = JSONObject()
             .put("op", "app")
             .put("request_id", requestId)
@@ -1209,11 +1220,20 @@ class RemoteController(
 
     private fun connect(link: AppLink) {
         sockets.remove(link.id)?.close(1000, "reconnect")
+        val previousOnline = online[link.id]
         online.remove(link.id)
+        if (previousOnline != null) {
+            DiagnosticLog.event(
+                "state.online",
+                linkId = link.id,
+                detail = mapOf("from" to previousOnline, "to" to "connecting"),
+            )
+        }
         var socket: WebSocket? = null
         socket = client.open(
             relay = link.relay,
             token = link.token,
+            linkId = link.id,
             onMessage = { message ->
                 main.post { if (sockets[link.id] === socket) handle(link.id, message) }
             },
@@ -1223,7 +1243,15 @@ class RemoteController(
         ) { connected ->
             main.post {
                 if (sockets[link.id] !== socket) return@post
+                val was = online[link.id]
                 online[link.id] = connected
+                if (was != connected) {
+                    DiagnosticLog.event(
+                        "state.online",
+                        linkId = link.id,
+                        detail = mapOf("from" to (was ?: "null"), "to" to connected),
+                    )
+                }
                 if (connected) {
                     retryDelay.remove(link.id)
                     refreshApp(link.id)
@@ -1240,6 +1268,7 @@ class RemoteController(
     private fun scheduleRetry(link: AppLink, failed: WebSocket?) {
         val delay = retryDelay[link.id] ?: RETRY_START_MS
         retryDelay[link.id] = (delay * 2).coerceAtMost(RETRY_MAX_MS)
+        DiagnosticLog.event("ws.retry", linkId = link.id, detail = mapOf("retry_ms" to delay))
         main.postDelayed({
             if (sockets[link.id] === failed && directory.all().any { it.id == link.id }) connect(link)
         }, delay)
@@ -1255,6 +1284,14 @@ class RemoteController(
 
     private fun dropWaits(linkId: String) {
         val lost = appWait.filterValues { it.linkId == linkId }
+        DiagnosticLog.event(
+            "drop_waits",
+            linkId = linkId,
+            detail = mapOf(
+                "app_count" to lost.size,
+                "kinds" to lost.values.map { it.kind }.distinct().take(12),
+            ),
+        )
         lost.forEach { (requestId, wait) ->
             appWait.remove(requestId)
             failApp(wait, requestId, "和这台 Mac 的连接断开了")
@@ -1383,7 +1420,17 @@ class RemoteController(
             }
             "error" -> {
                 val requestId = message.optString("request_id")
+                val code = message.optString("code")
                 val text = message.optString("message").ifBlank { "失败" }
+                DiagnosticLog.event(
+                    "app.error",
+                    linkId = linkId,
+                    detail = mapOf(
+                        "request_id" to requestId,
+                        "code" to code,
+                        "message" to text.take(80),
+                    ),
+                )
                 val file = if (requestId.isNotBlank()) fileWait.remove(requestId) else null
                 if (file != null) {
                     if (!file.quiet) desk(file.linkId).notice = text
@@ -1414,6 +1461,13 @@ class RemoteController(
         val desk = desk(wait.linkId)
         when (wait.kind) {
             "status" -> {
+                if (!desk.macOffline) {
+                    DiagnosticLog.event(
+                        "state.mac_offline",
+                        linkId = wait.linkId,
+                        detail = mapOf("from" to false, "to" to true, "reason" to text.take(80)),
+                    )
+                }
                 desk.macOffline = true
                 scheduleStatusRetry(wait.linkId)
                 pendingOpen = null
@@ -1493,19 +1547,41 @@ class RemoteController(
             if (!ok) {
                 appWait.remove(requestId)
                 if (inboundDownload?.messageId == requestId) inboundDownload = null
+                DiagnosticLog.event(
+                    "app.result",
+                    linkId = linkId,
+                    detail = mapOf("kind" to "download", "request_id" to requestId, "ok" to false, "error" to text.take(80)),
+                )
                 failApp(pending, requestId, text.ifBlank { "下载失败" })
             }
             return
         }
         val wait = appWait.remove(requestId) ?: return
         if (!ok) {
+            DiagnosticLog.event(
+                "app.result",
+                linkId = linkId,
+                detail = mapOf("kind" to wait.kind, "request_id" to requestId, "ok" to false, "error" to text.take(80)),
+            )
             failApp(wait, requestId, text.ifBlank { "失败" })
             return
         }
         val desk = desk(linkId)
         val body = message.optJSONObject("body") ?: JSONObject()
+        DiagnosticLog.event(
+            "app.result",
+            linkId = linkId,
+            detail = mapOf("kind" to wait.kind, "request_id" to requestId, "ok" to true),
+        )
         when (wait.kind) {
             "status" -> {
+                if (desk.macOffline) {
+                    DiagnosticLog.event(
+                        "state.mac_offline",
+                        linkId = linkId,
+                        detail = mapOf("from" to true, "to" to false),
+                    )
+                }
                 desk.macOffline = false
                 desk.installed = body.optBoolean("hermes_installed")
                 desk.running = body.optBoolean("hermes_running")

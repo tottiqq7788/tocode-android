@@ -59,13 +59,27 @@ class RelayClient(private val http: OkHttpClient = OkHttpClient.Builder()
     fun open(
         relay: String,
         token: String,
+        linkId: String = "",
         onMessage: (JSONObject) -> Unit,
         onBinary: (ByteArray) -> Unit = {},
         onConnection: (Boolean) -> Unit = {},
     ): WebSocket {
+        val corr = DiagnosticLog.bumpConnectionCorr()
+        DiagnosticLog.event(
+            "ws.connect_intent",
+            linkId = linkId,
+            corrId = corr,
+            detail = mapOf("host" to relay.trimEnd('/').substringAfter("://").substringBefore('/')),
+        )
         val request = Request.Builder().url(socketURL(relay, token)).build()
         return http.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: okhttp3.Response) {
+                DiagnosticLog.event(
+                    "ws.open",
+                    linkId = linkId,
+                    corrId = corr,
+                    detail = mapOf("http" to response.code),
+                )
                 onConnection(true)
             }
 
@@ -79,11 +93,27 @@ class RelayClient(private val http: OkHttpClient = OkHttpClient.Builder()
             }
 
             override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                DiagnosticLog.event(
+                    "ws.closing",
+                    linkId = linkId,
+                    corrId = corr,
+                    detail = mapOf("code" to code, "reason" to reason.take(120)),
+                )
                 webSocket.close(code, reason)
                 onConnection(false)
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: okhttp3.Response?) {
+                DiagnosticLog.event(
+                    "ws.failure",
+                    linkId = linkId,
+                    corrId = corr,
+                    detail = mapOf(
+                        "error" to (t::class.java.simpleName),
+                        "message" to (t.message?.take(120) ?: ""),
+                        "http" to (response?.code ?: 0),
+                    ),
+                )
                 onConnection(false)
             }
         })
