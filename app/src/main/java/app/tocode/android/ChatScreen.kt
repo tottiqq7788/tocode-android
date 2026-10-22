@@ -1169,6 +1169,7 @@ private fun ReplyBody(
                 }
                 is PreviewPiece.Item -> ReplyLinkedText(piece.text, entries, onOpenPath)
                 is PreviewPiece.Table -> MarkdownTable(piece)
+                is PreviewPiece.Mermaid -> MermaidView(piece.source)
                 is PreviewPiece.Image -> InlineReplyImage(piece.path, inlineImages[piece.path], onOpenImage)
             }
         }

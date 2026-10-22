@@ -1,9 +1,11 @@
 package app.tocode.android
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.border
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -36,12 +38,15 @@ import androidx.compose.material.icons.outlined.Build
 import androidx.compose.material.icons.outlined.CalendarMonth
 import androidx.compose.material.icons.outlined.Cancel
 import androidx.compose.material.icons.outlined.Chat
+import androidx.compose.material.icons.outlined.CheckBox
+import androidx.compose.material.icons.outlined.CheckBoxOutlineBlank
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.Code
 import androidx.compose.material.icons.outlined.DataObject
 import androidx.compose.material.icons.outlined.DarkMode
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Description
+import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.Email
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.Favorite
@@ -105,6 +110,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun FilesTab(
     controller: RemoteController,
@@ -118,7 +124,10 @@ fun FilesTab(
 ) {
     val clipboard = LocalClipboardManager.current
     val project = desk.openProject
-    BackHandler(enabled = path.isNotEmpty()) { onPath(path.substringBeforeLast('/', "")) }
+    BackHandler(enabled = desk.selecting || path.isNotEmpty()) {
+        if (desk.selecting) controller.clearSelection(link.id)
+        else onPath(path.substringBeforeLast('/', ""))
+    }
     val children = childrenOf(desk.entries, path)
     val page = desk.folderPages[path]
     val listState = rememberLazyListState()
@@ -176,12 +185,69 @@ fun FilesTab(
             }
             return@LazyColumn
         }
+        if (desk.selecting) {
+            item {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 12.dp)
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(Paper)
+                        .border(1.dp, Hairline, RoundedCornerShape(14.dp))
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Text(
+                        "取消",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = InkSoft,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(999.dp))
+                            .clickable(enabled = !desk.downloading) { controller.clearSelection(link.id) }
+                            .padding(horizontal = 10.dp, vertical = 6.dp),
+                    )
+                    Text(
+                        "已选 ${desk.selectedPaths.size}",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = Ink,
+                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(999.dp))
+                            .clickable(
+                                enabled = !desk.downloading && desk.selectedPaths.isNotEmpty(),
+                            ) { controller.downloadSelected(link.id) }
+                            .padding(horizontal = 10.dp, vertical = 6.dp)
+                            .alpha(if (desk.downloading || desk.selectedPaths.isEmpty()) 0.4f else 1f),
+                    ) {
+                        if (desk.downloading) {
+                            CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
+                            Spacer(Modifier.width(6.dp))
+                        } else {
+                            Icon(Icons.Outlined.Download, contentDescription = null, tint = Ink, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(4.dp))
+                        }
+                        Text(
+                            if (desk.downloading) "下载中" else "下载",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = Ink,
+                        )
+                    }
+                }
+            }
+        }
         item { Box(Modifier.padding(bottom = 12.dp)) { Breadcrumbs(path, onPick = onPath) } }
         if (desk.treeNotice.isNotBlank()) {
             item { Box(Modifier.padding(bottom = 12.dp)) { Banner(desk.treeNotice, Tone.Info) } }
         }
         if (desk.notice.isNotBlank()) {
-            item { Box(Modifier.padding(bottom = 12.dp)) { Banner(desk.notice, Tone.Bad) } }
+            item {
+                Box(Modifier.padding(bottom = 12.dp)) {
+                    Banner(desk.notice, if (desk.notice.startsWith("已保存")) Tone.Good else Tone.Bad)
+                }
+            }
         }
         if (page?.loaded != true) {
             item {
@@ -202,7 +268,11 @@ fun FilesTab(
             Box(Modifier.padding(bottom = 12.dp)) {
                 SectionTitle(
                     if (path.isEmpty()) project?.name ?: "项目根目录" else path.substringAfterLast('/'),
-                    if (page.truncated) "已列出 ${children.size} 项 · 只读" else "${children.size} 项 · 只读",
+                    when {
+                        desk.selecting -> "长按多选 · 点勾选切换 · 点文件夹仍可进入"
+                        page.truncated -> "已列出 ${children.size} 项 · 长按可多选下载"
+                        else -> "${children.size} 项 · 长按可多选下载"
+                    },
                 )
             }
         }
@@ -245,6 +315,9 @@ fun FilesTab(
                     EntryRow(
                         entry = entry,
                         count = if (entry.isFolder()) desk.entries.count { it.parent() == entry.path } else 0,
+                        selecting = desk.selecting,
+                        selected = entry.path in desk.selectedPaths,
+                        onToggle = { controller.toggleSelected(link.id, entry.path) },
                         onCite = {
                             val absolute = absoluteProjectPath(desk.projectRoot, entry.path)
                             if (absolute == null) {
@@ -256,6 +329,9 @@ fun FilesTab(
                         },
                         onOpen = {
                             if (entry.isFolder()) onPath(entry.path) else controller.openPreview(link.id, entry)
+                        },
+                        onLongPress = {
+                            controller.toggleSelected(link.id, entry.path)
                         },
                     )
                 }
@@ -313,25 +389,58 @@ private fun Crumb(label: String, selected: Boolean, onClick: () -> Unit) {
     )
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun EntryRow(entry: AppEntry, count: Int, onCite: () -> Unit, onOpen: () -> Unit) {
+private fun EntryRow(
+    entry: AppEntry,
+    count: Int,
+    selecting: Boolean,
+    selected: Boolean,
+    onToggle: () -> Unit,
+    onCite: () -> Unit,
+    onOpen: () -> Unit,
+    onLongPress: () -> Unit,
+) {
     val folder = entry.isFolder()
     val ext = entry.name.substringAfterLast('.', "").lowercase()
     Row(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .combinedClickable(
+                onClick = {
+                    if (selecting && !folder) onToggle()
+                    else onOpen()
+                },
+                onLongClick = onLongPress,
+            ),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        if (selecting) {
+            Icon(
+                if (selected) Icons.Outlined.CheckBox else Icons.Outlined.CheckBoxOutlineBlank,
+                contentDescription = if (selected) "已选" else "未选",
+                tint = if (selected) Ink else SlateLight,
+                modifier = Modifier
+                    .padding(start = 10.dp, end = 2.dp)
+                    .size(28.dp)
+                    .clickable(onClick = onToggle),
+            )
+        }
         Box(
             modifier = Modifier
-                .clickable(onClick = onCite)
-                .padding(start = 10.dp, top = 8.dp, bottom = 8.dp, end = 8.dp),
+                .clickable(onClick = if (selecting) onToggle else onCite)
+                .padding(start = if (selecting) 4.dp else 10.dp, top = 8.dp, bottom = 8.dp, end = 8.dp),
         ) {
             if (folder) IconBadge(Icons.Outlined.Folder, Tone.Warn, size = 38.dp) else IconBadge(fileIcon(ext), fileTone(ext), size = 38.dp)
         }
         Row(
             modifier = Modifier
                 .weight(1f)
-                .clickable(onClick = onOpen)
+                .clickable(onClick = {
+                    if (selecting && folder) onOpen()
+                    else if (selecting) onToggle()
+                    else onOpen()
+                })
                 .padding(top = 11.dp, bottom = 11.dp, end = 14.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -347,7 +456,9 @@ private fun EntryRow(entry: AppEntry, count: Int, onCite: () -> Unit, onOpen: ()
                     color = SlateLight,
                 )
             }
-            Icon(Icons.AutoMirrored.Outlined.ArrowForwardIos, contentDescription = null, tint = SlateLight, modifier = Modifier.size(13.dp))
+            if (!selecting || folder) {
+                Icon(Icons.AutoMirrored.Outlined.ArrowForwardIos, contentDescription = null, tint = SlateLight, modifier = Modifier.size(13.dp))
+            }
         }
     }
 }

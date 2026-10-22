@@ -426,6 +426,7 @@ internal fun MarkdownBody(content: String) {
                     modifier = Modifier.padding(start = 8.dp),
                 )
                 is PreviewPiece.Table -> MarkdownTable(piece)
+                is PreviewPiece.Mermaid -> MermaidView(piece.source)
                 is PreviewPiece.Image -> Text(
                     piece.alt.ifBlank { piece.path },
                     color = Sky,
@@ -480,6 +481,7 @@ internal sealed class PreviewPiece {
     data class Quote(val text: String) : PreviewPiece()
     data class Item(val text: String) : PreviewPiece()
     data class Table(val headers: List<String>, val rows: List<List<String>>) : PreviewPiece()
+    data class Mermaid(val source: String) : PreviewPiece()
     data class Image(val path: String, val alt: String) : PreviewPiece()
 }
 
@@ -513,6 +515,7 @@ internal fun markdownPieces(source: String): List<PreviewPiece> {
     while (index < lines.size) {
         val line = lines[index]
         if (line.startsWith("```")) {
+            val lang = line.removePrefix("```").trim().lowercase()
             val code = StringBuilder()
             index += 1
             while (index < lines.size && !lines[index].startsWith("```")) {
@@ -521,7 +524,11 @@ internal fun markdownPieces(source: String): List<PreviewPiece> {
                 index += 1
             }
             if (index < lines.size) index += 1
-            pieces.add(PreviewPiece.Code(code.toString()))
+            if (lang == "mermaid") {
+                pieces.add(PreviewPiece.Mermaid(code.toString()))
+            } else {
+                pieces.add(PreviewPiece.Code(code.toString()))
+            }
             continue
         }
         if (line.isBlank()) {

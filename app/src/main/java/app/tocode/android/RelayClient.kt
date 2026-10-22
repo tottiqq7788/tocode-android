@@ -6,6 +6,7 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
+import okio.ByteString
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
@@ -59,6 +60,7 @@ class RelayClient(private val http: OkHttpClient = OkHttpClient.Builder()
         relay: String,
         token: String,
         onMessage: (JSONObject) -> Unit,
+        onBinary: (ByteArray) -> Unit = {},
         onConnection: (Boolean) -> Unit = {},
     ): WebSocket {
         val request = Request.Builder().url(socketURL(relay, token)).build()
@@ -70,6 +72,10 @@ class RelayClient(private val http: OkHttpClient = OkHttpClient.Builder()
             override fun onMessage(webSocket: WebSocket, text: String) {
                 val json = runCatching { JSONObject(text) }.getOrNull() ?: return
                 onMessage(json)
+            }
+
+            override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
+                onBinary(bytes.toByteArray())
             }
 
             override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {

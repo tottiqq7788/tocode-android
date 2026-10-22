@@ -148,6 +148,28 @@ class LinkDirectoryTest {
     }
 
     @Test
+    fun markdownPiecesRecognizesMermaidBlocks() {
+        val source = """
+            说明
+
+            ```mermaid
+            graph LR
+              A --> B
+            ```
+
+            ```kotlin
+            val x = 1
+            ```
+        """.trimIndent()
+        val pieces = markdownPieces(source)
+        val mermaid = pieces.filterIsInstance<PreviewPiece.Mermaid>().single()
+        assertTrue(mermaid.source.contains("graph LR"))
+        assertTrue(mermaid.source.contains("A --> B"))
+        val code = pieces.filterIsInstance<PreviewPiece.Code>().single()
+        assertTrue(code.text.contains("val x = 1"))
+    }
+
+    @Test
     fun forceReloadAllowsTreeRequestAfterFolderAlreadyLoaded() {
         val loaded = FolderPage(next = 2, truncated = false, loaded = true)
         assertFalse(canStartFolderLoad(loaded, 0))

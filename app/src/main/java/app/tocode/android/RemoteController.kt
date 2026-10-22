@@ -49,6 +49,9 @@ class AppDesk {
     var inflight by mutableStateOf<Map<String, String>>(emptyMap())
     var pendingText = ""
     var restoreDraft by mutableStateOf("")
+    var selecting by mutableStateOf(false)
+    var selectedPaths by mutableStateOf<Set<String>>(emptySet())
+    var downloading by mutableStateOf(false)
 
     val sending: Boolean
         get() {
@@ -83,6 +86,14 @@ private data class AppWait(
 private data class FileOutcome(val path: String? = null, val hold: String? = null, val dropped: Boolean = false)
 
 private data class FileWait(val linkId: String, val quiet: Boolean, val callback: (FileOutcome?) -> Unit)
+
+private data class InboundDownload(
+    val linkId: String,
+    val messageId: String,
+    val name: String,
+    val size: Int,
+    val mode: String,
+)
 
 private class HeldFile(
     var file: ChatAttachment,
@@ -129,8 +140,14 @@ class RemoteController(
     private val sockets = linkedMapOf<String, WebSocket>()
     private val retryDelay = linkedMapOf<String, Long>()
     private val statusRetry = mutableSetOf<String>()
+    private var inboundDownload: InboundDownload? = null
     private val worker = Executors.newSingleThreadExecutor()
     private val main = Handler(Looper.getMainLooper())
+    private var appContext: android.content.Context? = null
+
+    fun bindContext(context: android.content.Context) {
+        appContext = context.applicationContext
+    }
     private var runningSessions = runningStore.load()
     private var recentReplies = replyStore.load()
     private var pendingOpen: SessionOpen? = null
@@ -978,6 +995,40 @@ class RemoteController(
         loadFolder(id, desk, path, page.next)
     }
 
+    fun clearSelection(id: String) {
+        val desk = desk(id)
+        desk.selecting = false
+        desk.selectedPaths = emptySet()
+    }
+
+    fun toggleSelected(id: String, path: String) {
+        val desk = desk(id)
+        desk.selecting = true
+        desk.selectedPaths = if (path in desk.selectedPaths) desk.selectedPaths - path else desk.selectedPaths + path
+    }
+
+    fun downloadSelected(id: String) {
+        val desk = desk(id)
+        val project = desk.openProject
+        val paths = desk.selectedPaths
+        if (project == null || paths.isEmpty() || desk.downloading) return
+        val payload = org.json.JSONArray(paths.toList()).toString()
+        desk.downloading = true
+        desk.notice = ""
+        val request = sendApp(
+            id,
+            "download",
+            profile = desk.profile,
+            projectId = project.id,
+            text = payload,
+            quiet = true,
+        )
+        if (request == null) {
+            desk.downloading = false
+            desk.notice = "这台 Mac 还没连上，正在重连…"
+        }
+    }
+
     private fun messagesInFlight(linkId: String, sessionId: String): Boolean =
         appWait.values.any { it.linkId == linkId && it.kind == "messages" && it.sessionId == sessionId }
 
@@ -1035,6 +1086,9 @@ class RemoteController(
         desk.preview = null
         desk.inlineImages = emptyMap()
         desk.directoryPath = ""
+        desk.selecting = false
+        desk.selectedPaths = emptySet()
+        desk.downloading = false
     }
 
     /** Drop cached listings but keep the folder the user is viewing. */
@@ -1140,9 +1194,14 @@ class RemoteController(
         if (offset > 0) body.put("offset", offset)
         if (cursor.isNotEmpty()) body.put("cursor", cursor)
         socket.send(body.toString())
-        val timeout = if (kind == "chat") CHAT_TIMEOUT_MS else APP_TIMEOUT_MS
+        val timeout = when (kind) {
+            "chat" -> CHAT_TIMEOUT_MS
+            "download" -> FILE_TIMEOUT_MS
+            else -> APP_TIMEOUT_MS
+        }
         main.postDelayed({
             val wait = appWait.remove(requestId) ?: return@postDelayed
+            if (inboundDownload?.messageId == requestId) inboundDownload = null
             failApp(wait, requestId, "Mac 没有回应，请稍后再试")
         }, timeout)
         return requestId
@@ -1152,9 +1211,16 @@ class RemoteController(
         sockets.remove(link.id)?.close(1000, "reconnect")
         online.remove(link.id)
         var socket: WebSocket? = null
-        socket = client.open(link.relay, link.token, { message ->
-            main.post { if (sockets[link.id] === socket) handle(link.id, message) }
-        }) { connected ->
+        socket = client.open(
+            relay = link.relay,
+            token = link.token,
+            onMessage = { message ->
+                main.post { if (sockets[link.id] === socket) handle(link.id, message) }
+            },
+            onBinary = { bytes ->
+                main.post { if (sockets[link.id] === socket) handleBinary(link.id, bytes) }
+            },
+        ) { connected ->
             main.post {
                 if (sockets[link.id] !== socket) return@post
                 online[link.id] = connected
@@ -1199,6 +1265,7 @@ class RemoteController(
             fileWait.remove(requestId)?.callback?.invoke(null)
         }
         fileJobActive = false
+        if (inboundDownload?.linkId == linkId) inboundDownload = null
         if (lostFiles.isNotEmpty()) desk(linkId).notice = "和这台 Mac 的连接断开了"
         followUp.remove(linkId)
         pressedButton.remove(linkId)
@@ -1209,9 +1276,58 @@ class RemoteController(
         }
     }
 
+    private fun handleBinary(linkId: String, bytes: ByteArray) {
+        val pending = inboundDownload ?: return
+        if (pending.linkId != linkId) return
+        inboundDownload = null
+        val wait = appWait.remove(pending.messageId)
+        val desk = desk(linkId)
+        if (bytes.size != pending.size) {
+            desk.downloading = false
+            desk.notice = "文件长度不匹配"
+            return
+        }
+        val context = appContext
+        if (context == null) {
+            desk.downloading = false
+            desk.notice = "无法写入下载目录"
+            return
+        }
+        worker.execute {
+            val result = DownloadLand.save(context, pending.name, pending.mode, bytes)
+            main.post {
+                desk.downloading = false
+                if (result.ok) {
+                    desk.notice = result.notice
+                    desk.selecting = false
+                    desk.selectedPaths = emptySet()
+                } else {
+                    desk.notice = result.notice
+                }
+                if (wait != null && wait.kind != "download") {
+                    // ignore
+                }
+            }
+        }
+    }
+
     private fun handle(linkId: String, message: JSONObject) {
         when (message.optString("op")) {
             "ready" -> refreshApp(linkId)
+            "file" -> {
+                val messageId = message.optString("message_id")
+                val wait = appWait[messageId] ?: return
+                if (wait.kind != "download" || wait.linkId != linkId) return
+                val size = message.optInt("size")
+                if (size <= 0) return
+                inboundDownload = InboundDownload(
+                    linkId = linkId,
+                    messageId = messageId,
+                    name = message.optString("name").ifBlank { "download.bin" },
+                    size = size,
+                    mode = message.optString("text").ifBlank { "file" },
+                )
+            }
             "app_result" -> applyApp(linkId, message)
             "project_file_result" -> {
                 val requestId = message.optString("request_id")
@@ -1345,6 +1461,11 @@ class RemoteController(
                 desk.foldersNotice = text
                 return
             }
+            "download" -> {
+                desk.downloading = false
+                desk.notice = text
+                return
+            }
             "chat" -> if (desk.inflight[wait.sessionId] == requestId || desk.chatRequest == requestId) {
                 if (desk.inflight[wait.sessionId] == requestId) desk.inflight = desk.inflight - wait.sessionId
                 if (desk.chatRequest == requestId) desk.chatRequest = null
@@ -1365,9 +1486,18 @@ class RemoteController(
 
     private fun applyApp(linkId: String, message: JSONObject) {
         val requestId = message.optString("request_id")
-        val wait = appWait.remove(requestId) ?: return
+        val pending = appWait[requestId] ?: return
         val ok = message.optBoolean("ok")
         val text = message.optString("text")
+        if (pending.kind == "download") {
+            if (!ok) {
+                appWait.remove(requestId)
+                if (inboundDownload?.messageId == requestId) inboundDownload = null
+                failApp(pending, requestId, text.ifBlank { "下载失败" })
+            }
+            return
+        }
+        val wait = appWait.remove(requestId) ?: return
         if (!ok) {
             failApp(wait, requestId, text.ifBlank { "失败" })
             return

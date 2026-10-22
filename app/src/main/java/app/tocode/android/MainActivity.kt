@@ -34,6 +34,7 @@ class MainActivity : ComponentActivity() {
                 replyStore = RecentReplyStore(File(filesDir, RECENT_REPLIES_FILE)),
             ).also { shared = it }
         }
+        controller.bindContext(applicationContext)
         controller.onRunningChanged = { _, finished ->
             refreshSessionWidgets(applicationContext)
             finished.forEach { showFinishedNotification(applicationContext, it) }
