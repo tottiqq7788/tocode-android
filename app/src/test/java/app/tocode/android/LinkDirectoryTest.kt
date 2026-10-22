@@ -122,6 +122,32 @@ class LinkDirectoryTest {
     }
 
     @Test
+    fun markdownPiecesParsesTablesAndImagePaths() {
+        val source = """
+            | 名称 | 说明 |
+            | --- | --- |
+            | a | 一 |
+            | b | 二 |
+
+            ![封面](docs/cover.png)
+
+            见 src/shot.jpg
+        """.trimIndent()
+        val pieces = markdownPieces(source)
+        val table = pieces.filterIsInstance<PreviewPiece.Table>().single()
+        assertEquals(listOf("名称", "说明"), table.headers)
+        assertEquals(listOf(listOf("a", "一"), listOf("b", "二")), table.rows)
+        val image = pieces.filterIsInstance<PreviewPiece.Image>().single()
+        assertEquals("docs/cover.png", image.path)
+        assertEquals(listOf("docs/cover.png"), markdownImagePaths(source))
+        assertTrue(isProjectRelativeImagePath("docs/cover.png"))
+        assertFalse(isProjectRelativeImagePath("../secret.png"))
+        assertFalse(isProjectRelativeImagePath("/abs/x.png"))
+        val entries = listOf(AppEntry("src/shot.jpg", "shot.jpg", "file"))
+        assertEquals(listOf("docs/cover.png", "src/shot.jpg"), replyImagePaths(source, entries))
+    }
+
+    @Test
     fun forceReloadAllowsTreeRequestAfterFolderAlreadyLoaded() {
         val loaded = FolderPage(next = 2, truncated = false, loaded = true)
         assertFalse(canStartFolderLoad(loaded, 0))

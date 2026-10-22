@@ -69,6 +69,7 @@ import androidx.compose.material.icons.outlined.Pause
 import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.outlined.Phone
 import androidx.compose.material.icons.outlined.PhotoCamera
+import androidx.compose.material.icons.outlined.PictureAsPdf
 import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.Public
 import androidx.compose.material.icons.outlined.Schedule
@@ -354,12 +355,14 @@ private fun EntryRow(entry: AppEntry, count: Int, onCite: () -> Unit, onOpen: ()
 private val codeExt = setOf("kt", "kts", "swift", "py", "js", "ts", "tsx", "jsx", "java", "go", "rs", "c", "h", "cpp", "m", "sh", "rb", "php")
 private val dataExt = setOf("json", "yml", "yaml", "toml", "xml", "plist", "gradle", "lock")
 private val imageExt = setOf("png", "jpg", "jpeg", "gif", "svg", "webp", "heic", "ico")
-private val textExt = setOf("md", "txt", "rtf", "pdf", "doc", "docx")
+private val pdfExt = setOf("pdf")
+private val textExt = setOf("md", "txt", "rtf", "doc", "docx")
 
 private fun fileIcon(ext: String): ImageVector = when (ext) {
     in codeExt -> Icons.Outlined.Code
     in dataExt -> Icons.Outlined.DataObject
     in imageExt -> Icons.Outlined.Image
+    in pdfExt -> Icons.Outlined.PictureAsPdf
     in textExt -> Icons.AutoMirrored.Outlined.Article
     else -> Icons.Outlined.InsertDriveFile
 }
@@ -368,6 +371,7 @@ private fun fileTone(ext: String): Tone = when (ext) {
     in codeExt -> Tone.Info
     in dataExt -> Tone.Good
     in imageExt -> Tone.Bad
+    in pdfExt -> Tone.Warn
     else -> Tone.Muted
 }
 

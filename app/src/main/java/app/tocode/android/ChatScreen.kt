@@ -12,7 +12,15 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.core.MutableTransitionState
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -24,6 +32,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -95,9 +104,12 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.IntOffset
@@ -427,9 +439,9 @@ private fun SessionRow(session: AppSession, running: Boolean, onClick: () -> Uni
 }
 
 private val suggestions = listOf(
-    "介绍一下这个项目的结构",
-    "最近有哪些改动？",
-    "帮我检查一下有没有明显的问题",
+    "理解一下当前项目的结构。",
+    "基于当前项目的状态，你认为我下一步应该做什么？",
+    "请审查一下当前项目。",
 )
 
 @Composable
@@ -516,6 +528,8 @@ fun ChatScreen(controller: RemoteController, link: AppLink, desk: AppDesk, sessi
     var confirmDelete by remember { mutableStateOf(false) }
     var managing by remember { mutableStateOf(false) }
     var showFiles by rememberSaveable(session.id) { mutableStateOf(false) }
+    val filesVisible = remember { MutableTransitionState(false) }
+    LaunchedEffect(showFiles) { filesVisible.targetState = showFiles }
     val canSend = online == true && desk.canChat && !desk.sending
     Box(modifier = Modifier.fillMaxSize()) {
     Column(modifier = Modifier.fillMaxSize().background(Canvas)) {
@@ -549,11 +563,16 @@ fun ChatScreen(controller: RemoteController, link: AppLink, desk: AppDesk, sessi
                     latest = pageCount == 0 || (pageIndex >= 0 && pageIndex == pageCount - 1),
                     sending = desk.sending,
                     entries = desk.entries,
+                    inlineImages = desk.inlineImages,
+                    onEnsureImage = { controller.ensureInlinePreview(link.id, it) },
                     onOpenAttachment = { openAttachment(it) },
+                    onOpenImage = { controller.openPreviewPath(link.id, it) },
                 ) { span ->
                     if (span.folder) {
                         controller.openDirectory(link.id, span.path)
                         showFiles = true
+                    } else if (isProjectRelativeImagePath(span.path)) {
+                        controller.openPreviewPath(link.id, span.path)
                     } else {
                         val entry = desk.entries.firstOrNull { it.path == span.path } ?: return@MessageList
                         controller.openPreview(link.id, entry)
@@ -639,23 +658,48 @@ fun ChatScreen(controller: RemoteController, link: AppLink, desk: AppDesk, sessi
             },
         )
     }
-        if (showFiles) {
-            BackHandler { showFiles = false }
-            ProjectDirectoryDrawer(
-                controller = controller,
-                link = link,
-                desk = desk,
-                online = online,
-                onClose = { showFiles = false },
-                onQuote = { absolute ->
-                    val next = appendCitation(draft, absolute)
-                    if (next == null) desk.notice = "消息太长，放不下这条路径"
-                    else {
-                        draft = next
-                        cursor = next.length
-                    }
-                },
-            )
+        if (filesVisible.currentState || filesVisible.targetState || !filesVisible.isIdle) {
+            if (showFiles || filesVisible.targetState) {
+                BackHandler { showFiles = false }
+            }
+            AnimatedVisibility(
+                visibleState = filesVisible,
+                enter = fadeIn(tween(180)),
+                exit = fadeOut(tween(180)),
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color.Black.copy(alpha = 0.32f))
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
+                            onClick = { showFiles = false },
+                        ),
+                )
+            }
+            AnimatedVisibility(
+                visibleState = filesVisible,
+                enter = slideInVertically(tween(280)) { it },
+                exit = slideOutVertically(tween(280)) { it },
+                modifier = Modifier.align(Alignment.BottomCenter),
+            ) {
+                ProjectDirectoryDrawer(
+                    controller = controller,
+                    link = link,
+                    desk = desk,
+                    online = online,
+                    onClose = { showFiles = false },
+                    onQuote = { absolute ->
+                        val next = appendCitation(draft, absolute)
+                        if (next == null) desk.notice = "消息太长，放不下这条路径"
+                        else {
+                            draft = next
+                            cursor = next.length
+                        }
+                    },
+                )
+            }
         }
     }
     if (managing) {
@@ -781,45 +825,37 @@ private fun ProjectDirectoryDrawer(
     onClose: () -> Unit,
     onQuote: (String) -> Unit,
 ) {
-    Box(modifier = Modifier.fillMaxSize()) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .fillMaxHeight(0.08f)
-                .background(Color.Black.copy(alpha = 0.32f))
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null,
-                    onClick = onClose,
-                ),
-        )
-        Column(
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .fillMaxWidth()
-                .fillMaxHeight(0.92f)
-                .clip(RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp))
-                .background(Canvas),
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .fillMaxHeight(0.92f)
+            .clip(RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp))
+            .background(Canvas)
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = {},
+            ),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp, top = 10.dp, bottom = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp, top = 10.dp, bottom = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text("项目目录", style = MaterialTheme.typography.titleMedium, color = Ink)
-                    Text(
-                        desk.openProject?.name ?: "未选项目",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = Slate,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
+            Column(modifier = Modifier.weight(1f)) {
+                Text("项目目录", style = MaterialTheme.typography.titleMedium, color = Ink)
+                Text(
+                    desk.openProject?.name ?: "未选项目",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = Slate,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
             IconButton(onClick = onClose) {
                 Icon(Icons.Outlined.Close, contentDescription = "关闭目录", tint = Slate)
             }
-            }
-            Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+        }
+        Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
             FilesTab(
                 controller,
                 link,
@@ -830,7 +866,6 @@ private fun ProjectDirectoryDrawer(
                 onPickProject = {},
                 onQuote = onQuote,
             )
-            }
         }
     }
 }
@@ -885,7 +920,10 @@ private fun MessageList(
     latest: Boolean,
     sending: Boolean,
     entries: List<AppEntry>,
+    inlineImages: Map<String, InlineImage>,
+    onEnsureImage: (String) -> Unit,
     onOpenAttachment: (String) -> Unit,
+    onOpenImage: (String) -> Unit,
     onOpenPath: (PathSpan) -> Unit,
 ) {
     val listState = rememberLazyListState()
@@ -908,12 +946,21 @@ private fun MessageList(
             val live = latest && sending && index == blocks.lastIndex && block is ChatBlock.Process
             when (block) {
                 is ChatBlock.User -> UserBubble(block.text, onOpenAttachment)
-                is ChatBlock.Reply -> AssistantBubble(block.text, entries, onOpenPath)
+                is ChatBlock.Reply -> AssistantBubble(
+                    block.text,
+                    entries,
+                    inlineImages,
+                    onEnsureImage,
+                    onOpenImage,
+                    onOpenPath,
+                )
                 is ChatBlock.Process -> ProcessBlock(block.lines, live)
             }
         }
         if (showTyping) {
-            item(key = "typing-$pageIndex") { AssistantBubble(null, emptyList()) {} }
+            item(key = "typing-$pageIndex") {
+                AssistantBubble(null, emptyList(), emptyMap(), {}, {}, {})
+            }
         }
     }
 }
@@ -1047,9 +1094,15 @@ private fun ProcessBlock(lines: List<String>, live: Boolean) {
 }
 
 @Composable
-private fun AssistantBubble(text: String?, entries: List<AppEntry>, onOpenPath: (PathSpan) -> Unit) {
+private fun AssistantBubble(
+    text: String?,
+    entries: List<AppEntry>,
+    inlineImages: Map<String, InlineImage>,
+    onEnsureImage: (String) -> Unit,
+    onOpenImage: (String) -> Unit,
+    onOpenPath: (PathSpan) -> Unit,
+) {
     val shape = RoundedCornerShape(topStart = 6.dp, topEnd = 20.dp, bottomStart = 20.dp, bottomEnd = 20.dp)
-    val linked = if (text == null) null else replyText(text, entries, onOpenPath)
     Box(
         modifier = Modifier
             .fillMaxWidth()
@@ -1057,17 +1110,134 @@ private fun AssistantBubble(text: String?, entries: List<AppEntry>, onOpenPath: 
             .clip(shape)
             .background(Paper)
             .border(1.dp, Hairline, shape)
-            .then(if (text != null && linked == null) copyable(text) else Modifier)
+            .then(if (text != null) copyable(text) else Modifier)
             .padding(horizontal = 15.dp, vertical = if (text == null) 15.dp else 11.dp),
     ) {
         if (text == null) {
             TypingDots()
-        } else if (linked != null) {
-            Text(linked, style = MaterialTheme.typography.bodyLarge, color = Color.Unspecified)
         } else {
-            Text(text, style = MaterialTheme.typography.bodyLarge, color = Ink)
+            ReplyBody(text, entries, inlineImages, onEnsureImage, onOpenImage, onOpenPath)
         }
     }
+}
+
+@Composable
+private fun ReplyBody(
+    text: String,
+    entries: List<AppEntry>,
+    inlineImages: Map<String, InlineImage>,
+    onEnsureImage: (String) -> Unit,
+    onOpenImage: (String) -> Unit,
+    onOpenPath: (PathSpan) -> Unit,
+) {
+    val pieces = remember(text) { markdownPieces(text) }
+    val images = remember(text, entries) { replyImagePaths(text, entries) }
+    LaunchedEffect(images) {
+        images.forEach(onEnsureImage)
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        pieces.forEach { piece ->
+            when (piece) {
+                is PreviewPiece.Heading -> Text(
+                    piece.text,
+                    color = Ink,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = if (piece.level <= 2) 20.sp else 17.sp,
+                    lineHeight = if (piece.level <= 2) 28.sp else 24.sp,
+                )
+                is PreviewPiece.Paragraph -> ReplyLinkedText(piece.text, entries, onOpenPath)
+                is PreviewPiece.Code -> Text(
+                    piece.text,
+                    color = Ink,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 13.sp,
+                    lineHeight = 20.sp,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(Fog, RoundedCornerShape(10.dp))
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                )
+                is PreviewPiece.Quote -> Row(modifier = Modifier.fillMaxWidth()) {
+                    Box(modifier = Modifier.width(3.dp).background(Sky, RoundedCornerShape(2.dp)))
+                    Text(
+                        piece.text,
+                        color = Slate,
+                        fontSize = 15.sp,
+                        lineHeight = 24.sp,
+                        modifier = Modifier.padding(start = 10.dp),
+                    )
+                }
+                is PreviewPiece.Item -> ReplyLinkedText(piece.text, entries, onOpenPath)
+                is PreviewPiece.Table -> MarkdownTable(piece)
+                is PreviewPiece.Image -> InlineReplyImage(piece.path, inlineImages[piece.path], onOpenImage)
+            }
+        }
+        images.filter { path -> pieces.none { it is PreviewPiece.Image && it.path == path } }.forEach { path ->
+            InlineReplyImage(path, inlineImages[path], onOpenImage)
+        }
+    }
+}
+
+@Composable
+private fun ReplyLinkedText(text: String, entries: List<AppEntry>, onOpenPath: (PathSpan) -> Unit) {
+    val linked = remember(text, entries) { replyText(text, entries, onOpenPath) }
+    if (linked != null) {
+        Text(linked, style = MaterialTheme.typography.bodyLarge, color = Color.Unspecified)
+    } else {
+        Text(text, style = MaterialTheme.typography.bodyLarge, color = Ink)
+    }
+}
+
+@Composable
+private fun InlineReplyImage(path: String, image: InlineImage?, onOpen: (String) -> Unit) {
+    val bitmap = remember(image?.content) { image?.content?.takeIf { it.isNotEmpty() }?.let { decodePreviewImage(it) } }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(Fog)
+            .clickable(enabled = bitmap != null) { onOpen(path) }
+            .padding(8.dp),
+    ) {
+        when {
+            image?.loading == true || image == null -> {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 18.dp),
+                    horizontalArrangement = Arrangement.Center,
+                ) {
+                    CircularProgressIndicator(modifier = Modifier.size(22.dp), color = Pine, strokeWidth = 2.dp)
+                }
+            }
+            bitmap != null -> Image(
+                bitmap = bitmap.asImageBitmap(),
+                contentDescription = path.substringAfterLast('/'),
+                contentScale = ContentScale.Fit,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(bitmap.width.toFloat() / bitmap.height.coerceAtLeast(1).toFloat()),
+            )
+            else -> Text(
+                image.notice.ifBlank { "图片打不开" },
+                color = Slate,
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(8.dp),
+            )
+        }
+        Text(
+            path.substringAfterLast('/'),
+            color = Slate,
+            style = MaterialTheme.typography.labelMedium,
+            modifier = Modifier.padding(top = 6.dp),
+        )
+    }
+}
+
+internal fun replyImagePaths(text: String, entries: List<AppEntry>): List<String> {
+    val fromMarkdown = markdownImagePaths(text)
+    val fromEntries = pathSpans(text, entries)
+        .filter { !it.folder && isProjectRelativeImagePath(it.path) }
+        .map { it.path }
+    return (fromMarkdown + fromEntries).distinct()
 }
 
 private fun replyText(text: String, entries: List<AppEntry>, onOpenPath: (PathSpan) -> Unit): AnnotatedString? {

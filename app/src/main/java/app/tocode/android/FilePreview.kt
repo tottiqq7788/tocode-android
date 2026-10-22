@@ -1,10 +1,15 @@
 package app.tocode.android
 
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.pdf.PdfRenderer
+import android.os.ParcelFileDescriptor
 import android.util.Base64
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -46,6 +51,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -130,6 +136,7 @@ fun FilePreviewScreen(
                         when {
                             preview.loading -> "正在读取"
                             preview.format == "image" -> "图片"
+                            preview.format == "pdf" -> "PDF"
                             preview.format == "markdown" -> "Markdown"
                             else -> "文本"
                         }
@@ -162,6 +169,13 @@ fun FilePreviewScreen(
             preview.format == "image" -> ImageBody(
                 preview.content,
                 preview.name,
+                mark,
+                { pixels -> if (pixels > 0) onScroll(pixels, 0) },
+                Modifier.weight(1f).fillMaxWidth(),
+            )
+            preview.format == "pdf" -> PdfBody(
+                preview.content,
+                preview.path.ifBlank { preview.name },
                 mark,
                 { pixels -> if (pixels > 0) onScroll(pixels, 0) },
                 Modifier.weight(1f).fillMaxWidth(),
@@ -242,11 +256,110 @@ private fun ImageBody(
     }
 }
 
-private fun decodePreviewImage(content: String): android.graphics.Bitmap? {
+fun decodePreviewImage(content: String): Bitmap? {
     return try {
         val bytes = Base64.decode(content, Base64.DEFAULT)
         if (bytes.isEmpty()) null else BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
     } catch (_: IllegalArgumentException) {
+        null
+    }
+}
+
+@Composable
+private fun PdfBody(
+    content: String,
+    cacheKey: String,
+    bookmark: PreviewBookmark?,
+    onScroll: (Int) -> Unit,
+    modifier: Modifier,
+) {
+    val context = LocalContext.current
+    val pages = remember(content, cacheKey) { renderPdfPages(context.cacheDir, cacheKey, content) }
+    val scroll = rememberScrollState()
+    if (pages == null) {
+        EmptyState(
+            icon = Icons.Outlined.ErrorOutline,
+            title = "打不开",
+            subtitle = "这个 PDF 没有显示出来。",
+            tone = Tone.Bad,
+        )
+        return
+    }
+    if (pages.isEmpty()) {
+        EmptyState(
+            icon = Icons.Outlined.ErrorOutline,
+            title = "空文件",
+            subtitle = "这个 PDF 里没有页面。",
+        )
+        return
+    }
+    LaunchedEffect(content) {
+        val target = bookmark?.scroll ?: 0
+        if (target > 0) {
+            val max = snapshotFlow { scroll.maxValue }.first { it > 0 }
+            scroll.scrollTo(target.coerceAtMost(max))
+        }
+    }
+    DisposableEffect(content) {
+        onDispose { if (scroll.value > 0) onScroll(scroll.value) }
+    }
+    LaunchedEffect(content) {
+        snapshotFlow { scroll.value }.collectLatest { value ->
+            if (value <= 0) return@collectLatest
+            delay(200)
+            onScroll(scroll.value)
+        }
+    }
+    Column(
+        modifier = modifier
+            .verticalScroll(scroll)
+            .padding(horizontal = 20.dp, vertical = 18.dp)
+            .navigationBarsPadding(),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        pages.forEachIndexed { index, bitmap ->
+            Image(
+                bitmap = bitmap.asImageBitmap(),
+                contentDescription = "第 ${index + 1} 页",
+                contentScale = ContentScale.Fit,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(bitmap.width.toFloat() / bitmap.height.coerceAtLeast(1).toFloat())
+                    .border(1.dp, Hairline, RoundedCornerShape(8.dp)),
+            )
+        }
+    }
+}
+
+private fun renderPdfPages(cacheDir: File, cacheKey: String, content: String): List<Bitmap>? {
+    return try {
+        val bytes = Base64.decode(content, Base64.DEFAULT)
+        if (bytes.isEmpty() || !bytes.copyOfRange(0, minOf(4, bytes.size)).contentEquals("%PDF".toByteArray())) {
+            return null
+        }
+        val folder = File(cacheDir, "pdf-preview").apply { mkdirs() }
+        val safe = cacheKey.replace(Regex("[^A-Za-z0-9._-]"), "_").take(120).ifBlank { "doc" }
+        val file = File(folder, "$safe.pdf")
+        file.writeBytes(bytes)
+        val descriptor = ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
+        val renderer = PdfRenderer(descriptor)
+        val pages = mutableListOf<Bitmap>()
+        try {
+            for (index in 0 until renderer.pageCount) {
+                val page = renderer.openPage(index)
+                val width = (page.width * 2).coerceAtLeast(1)
+                val height = (page.height * 2).coerceAtLeast(1)
+                val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+                page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                page.close()
+                pages.add(bitmap)
+            }
+        } finally {
+            renderer.close()
+            descriptor.close()
+        }
+        pages
+    } catch (_: Exception) {
         null
     }
 }
@@ -263,8 +376,8 @@ private fun PlainBody(content: String) {
 }
 
 @Composable
-private fun MarkdownBody(content: String) {
-    Column(verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(12.dp)) {
+internal fun MarkdownBody(content: String) {
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         markdownPieces(content).forEach { piece ->
             when (piece) {
                 is PreviewPiece.Heading -> Text(
@@ -312,7 +425,50 @@ private fun MarkdownBody(content: String) {
                     lineHeight = 28.sp,
                     modifier = Modifier.padding(start = 8.dp),
                 )
+                is PreviewPiece.Table -> MarkdownTable(piece)
+                is PreviewPiece.Image -> Text(
+                    piece.alt.ifBlank { piece.path },
+                    color = Sky,
+                    fontSize = 15.sp,
+                    lineHeight = 22.sp,
+                )
             }
+        }
+    }
+}
+
+@Composable
+internal fun MarkdownTable(table: PreviewPiece.Table) {
+    val scroll = rememberScrollState()
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(scroll)
+            .border(1.dp, Hairline, RoundedCornerShape(10.dp))
+            .padding(1.dp),
+    ) {
+        TableRow(table.headers, header = true)
+        table.rows.forEach { row ->
+            Box(Modifier.fillMaxWidth().height(1.dp).background(Hairline))
+            TableRow(row, header = false)
+        }
+    }
+}
+
+@Composable
+private fun TableRow(cells: List<String>, header: Boolean) {
+    Row(modifier = Modifier.fillMaxWidth()) {
+        cells.forEach { cell ->
+            Text(
+                cell,
+                color = if (header) Ink else InkSoft,
+                fontWeight = if (header) FontWeight.SemiBold else FontWeight.Normal,
+                fontSize = 14.sp,
+                lineHeight = 20.sp,
+                modifier = Modifier
+                    .width(120.dp)
+                    .padding(horizontal = 10.dp, vertical = 8.dp),
+            )
         }
     }
 }
@@ -323,7 +479,32 @@ internal sealed class PreviewPiece {
     data class Code(val text: String) : PreviewPiece()
     data class Quote(val text: String) : PreviewPiece()
     data class Item(val text: String) : PreviewPiece()
+    data class Table(val headers: List<String>, val rows: List<List<String>>) : PreviewPiece()
+    data class Image(val path: String, val alt: String) : PreviewPiece()
 }
+
+private val markdownImageRegex = Regex("""!\[([^]]*)]\(([^)]+)\)""")
+
+internal fun markdownImagePaths(source: String): List<String> =
+    markdownImageRegex.findAll(source)
+        .map { it.groupValues[2].trim() }
+        .filter { isProjectRelativeImagePath(it) }
+        .distinct()
+        .toList()
+
+internal fun isProjectRelativeImagePath(path: String): Boolean {
+    if (path.startsWith("/") || path.contains("://") || path.contains('\n')) return false
+    val parts = path.split('/')
+    if (parts.isEmpty() || parts.any { it.isEmpty() || it == "." || it == ".." }) return false
+    val ext = path.substringAfterLast('.', "").lowercase()
+    return ext in setOf("png", "jpg", "jpeg", "gif", "webp", "heic", "heif")
+}
+
+internal fun stripMarkdownImages(source: String): String =
+    markdownImageRegex.replace(source) { match ->
+        val alt = match.groupValues[1].trim()
+        alt.ifBlank { "" }
+    }
 
 internal fun markdownPieces(source: String): List<PreviewPiece> {
     val lines = source.replace("\r\n", "\n").replace('\r', '\n').split('\n')
@@ -346,6 +527,15 @@ internal fun markdownPieces(source: String): List<PreviewPiece> {
         if (line.isBlank()) {
             index += 1
             continue
+        }
+        val imageOnly = markdownImageRegex.matchEntire(line.trim())
+        if (imageOnly != null) {
+            val path = imageOnly.groupValues[2].trim()
+            if (isProjectRelativeImagePath(path)) {
+                pieces.add(PreviewPiece.Image(path, imageOnly.groupValues[1].trim()))
+                index += 1
+                continue
+            }
         }
         val heading = Regex("^(#{1,6})\\s+(.*)$").find(line)
         if (heading != null) {
@@ -375,15 +565,50 @@ internal fun markdownPieces(source: String): List<PreviewPiece> {
             }
             continue
         }
+        if (index + 1 < lines.size && looksLikeTableRow(line) && isTableSeparator(lines[index + 1])) {
+            val headers = splitTableRow(line).map { inlinePlain(it) }
+            index += 2
+            val rows = mutableListOf<List<String>>()
+            while (index < lines.size && looksLikeTableRow(lines[index])) {
+                rows.add(splitTableRow(lines[index]).map { inlinePlain(it) })
+                index += 1
+            }
+            pieces.add(PreviewPiece.Table(headers, rows))
+            continue
+        }
         val paragraph = StringBuilder()
-        while (index < lines.size && lines[index].isNotBlank() && !lines[index].startsWith("```") && !lines[index].startsWith(">") && !isListItem(lines[index]) && !lines[index].matches(Regex("^#{1,6}\\s+.*$"))) {
+        while (
+            index < lines.size &&
+            lines[index].isNotBlank() &&
+            !lines[index].startsWith("```") &&
+            !lines[index].startsWith(">") &&
+            !isListItem(lines[index]) &&
+            !lines[index].matches(Regex("^#{1,6}\\s+.*$")) &&
+            !(index + 1 < lines.size && looksLikeTableRow(lines[index]) && isTableSeparator(lines[index + 1]))
+        ) {
             if (paragraph.isNotEmpty()) paragraph.append('\n')
-            paragraph.append(inlinePlain(lines[index]))
+            paragraph.append(inlinePlain(stripMarkdownImages(lines[index])))
             index += 1
         }
-        pieces.add(PreviewPiece.Paragraph(paragraph.toString()))
+        val text = paragraph.toString().trim()
+        if (text.isNotEmpty()) pieces.add(PreviewPiece.Paragraph(text))
     }
     return pieces
+}
+
+internal fun looksLikeTableRow(line: String): Boolean =
+    line.contains('|') && splitTableRow(line).isNotEmpty()
+
+internal fun isTableSeparator(line: String): Boolean {
+    val cells = splitTableRow(line)
+    return cells.isNotEmpty() && cells.all { it.matches(Regex("^:?-{1,}:?$")) }
+}
+
+internal fun splitTableRow(line: String): List<String> {
+    var raw = line.trim()
+    if (raw.startsWith("|")) raw = raw.drop(1)
+    if (raw.endsWith("|")) raw = raw.dropLast(1)
+    return raw.split('|').map { it.trim() }
 }
 
 private fun isListItem(line: String): Boolean {

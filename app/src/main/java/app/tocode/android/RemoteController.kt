@@ -39,6 +39,7 @@ class AppDesk {
     var transcripts by mutableStateOf<Map<String, SessionTranscript>>(emptyMap())
     var openSession by mutableStateOf<AppSession?>(null)
     var preview by mutableStateOf<AppPreview?>(null)
+    var inlineImages by mutableStateOf<Map<String, InlineImage>>(emptyMap())
     var directoryPath by mutableStateOf("")
     var tab by mutableStateOf("sessions")
     var notice by mutableStateOf("")
@@ -60,6 +61,14 @@ class AppDesk {
 
 data class SessionTranscript(val turns: List<AppTurn> = emptyList(), val exhausted: Boolean = false)
 
+data class InlineImage(
+    val path: String,
+    val loading: Boolean = false,
+    val content: String = "",
+    val format: String = "",
+    val notice: String = "",
+)
+
 private data class AppWait(
     val linkId: String,
     val kind: String,
@@ -68,6 +77,7 @@ private data class AppWait(
     val path: String = "",
     val offset: Int = 0,
     val cursor: String = "",
+    val inline: Boolean = false,
 )
 
 private data class FileOutcome(val path: String? = null, val hold: String? = null, val dropped: Boolean = false)
@@ -903,6 +913,35 @@ class RemoteController(
         }
     }
 
+    fun openPreviewPath(id: String, path: String) {
+        val trimmed = path.trim()
+        if (trimmed.isEmpty()) return
+        openPreview(id, AppEntry(trimmed, trimmed.substringAfterLast('/'), "file"))
+    }
+
+    fun ensureInlinePreview(id: String, path: String) {
+        val desk = desk(id)
+        val project = desk.openProject ?: return
+        if (!desk.canChat || !isProjectRelativeImagePath(path)) return
+        val existing = desk.inlineImages[path]
+        if (existing != null && (existing.loading || existing.content.isNotEmpty() || existing.notice.isNotEmpty())) return
+        desk.inlineImages = desk.inlineImages + (path to InlineImage(path = path, loading = true))
+        val request = sendApp(
+            id,
+            "preview",
+            profile = desk.profile,
+            projectId = project.id,
+            path = path,
+            quiet = true,
+            inline = true,
+        )
+        if (request == null) {
+            desk.inlineImages = desk.inlineImages + (
+                path to InlineImage(path = path, loading = false, notice = "这台 Mac 还没连上，正在重连…")
+            )
+        }
+    }
+
     fun closePreview(id: String) {
         desk(id).preview = null
     }
@@ -994,6 +1033,7 @@ class RemoteController(
         desk.treeNotice = ""
         desk.treeLoaded = false
         desk.preview = null
+        desk.inlineImages = emptyMap()
         desk.directoryPath = ""
     }
 
@@ -1077,6 +1117,7 @@ class RemoteController(
         offset: Int = 0,
         cursor: String = "",
         quiet: Boolean = false,
+        inline: Boolean = false,
     ): String? {
         if (directory.all().none { it.id == id }) return null
         val socket = sockets[id]
@@ -1085,7 +1126,7 @@ class RemoteController(
             return null
         }
         val requestId = UUID.randomUUID().toString()
-        appWait[requestId] = AppWait(id, kind, sessionId, projectId, path, offset, cursor)
+        appWait[requestId] = AppWait(id, kind, sessionId, projectId, path, offset, cursor, inline)
         val body = JSONObject()
             .put("op", "app")
             .put("request_id", requestId)
@@ -1287,6 +1328,12 @@ class RemoteController(
                 return
             }
             "preview" -> {
+                if (wait.inline) {
+                    desk.inlineImages = desk.inlineImages + (
+                        wait.path to InlineImage(path = wait.path, loading = false, notice = text.ifBlank { "打不开" })
+                    )
+                    return
+                }
                 val current = desk.preview
                 if (current != null && current.path == wait.path) {
                     desk.preview = current.copy(loading = false, loadingMore = false, truncated = false, notice = text)
@@ -1508,17 +1555,31 @@ class RemoteController(
                 refreshDirectoryAfterChat(linkId)
             }
             "preview" -> {
+                if (wait.inline) {
+                    val format = body.optString("format").ifBlank { "text" }
+                    val chunk = body.optString("content")
+                    desk.inlineImages = desk.inlineImages + (
+                        wait.path to InlineImage(
+                            path = wait.path,
+                            loading = false,
+                            content = if (format == "image") chunk else "",
+                            format = format,
+                            notice = if (format == "image" && chunk.isNotEmpty()) "" else text.ifBlank { "打不开" },
+                        )
+                    )
+                    return
+                }
                 val current = desk.preview ?: return
                 if (current.path != wait.path) return
                 if (current.loading && wait.offset > 0) return
                 val chunk = body.optString("content")
                 val format = body.optString("format").ifBlank { "text" }
-                if (format == "image") {
+                if (format == "image" || format == "pdf") {
                     desk.preview = current.copy(
                         loading = false,
                         loadingMore = false,
                         name = body.optString("name").ifBlank { current.name },
-                        format = "image",
+                        format = format,
                         content = chunk,
                         next = 0,
                         truncated = false,
