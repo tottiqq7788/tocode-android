@@ -13,10 +13,17 @@ class RelayClient(private val http: OkHttpClient = OkHttpClient.Builder()
     .pingInterval(20, TimeUnit.SECONDS)
     .build()
 ) {
-    fun redeem(relay: String, code: String, androidId: String, androidName: String): AppLink {
+    fun redeem(
+        relay: String,
+        code: String,
+        androidId: String,
+        androidName: String,
+        bindingKey: String,
+    ): AppLink {
         val body = JSONObject()
             .put("android_id", androidId)
             .put("android_name", androidName)
+            .put("binding_key", bindingKey)
             .toString()
             .toRequestBody("application/json".toMediaType())
         val request = Request.Builder()

@@ -72,12 +72,17 @@ fun ScanScreen(controller: RemoteController) {
         )
     }
     var paste by remember { mutableStateOf("") }
+    var bindingKey by remember { mutableStateOf("") }
     val analyzer = remember { QrAnalyzer() }
     analyzer.onCode = controller::submitCode
     val notice = controller.scanNotice
     val pairing = controller.pairing
-    LaunchedEffect(notice, pairing) {
-        if (!pairing) analyzer.handled = false
+    val pending = controller.pendingPairing
+    LaunchedEffect(notice, pairing, pending) {
+        if (!pairing && pending == null) analyzer.handled = false
+    }
+    LaunchedEffect(pending) {
+        if (pending == null) bindingKey = ""
     }
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted = it }
     LaunchedEffect(Unit) {
@@ -181,9 +186,23 @@ fun ScanScreen(controller: RemoteController) {
                 .imePadding()
                 .padding(horizontal = 20.dp, vertical = 20.dp),
         ) {
-            Text("对准 Mac 上的二维码", style = MaterialTheme.typography.titleMedium, color = Ink)
-            Spacer(Modifier.height(4.dp))
-            Text("在 Mac 菜单栏右键 Tocode →「应用 → 绑定应用」", style = MaterialTheme.typography.bodyMedium, color = Slate)
+            if (pending == null) {
+                Text("对准 Mac 上的二维码", style = MaterialTheme.typography.titleMedium, color = Ink)
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "在 Mac 菜单栏右键 Tocode →「应用 → 绑定应用」",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Slate,
+                )
+            } else {
+                Text("输入绑定密钥", style = MaterialTheme.typography.titleMedium, color = Ink)
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "在 Mac「应用 → 绑定密钥」里设置的密钥，扫码后还要输入一次才能绑定成功",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Slate,
+                )
+            }
             if (pairing) {
                 Spacer(Modifier.height(14.dp))
                 Row(
@@ -199,11 +218,34 @@ fun ScanScreen(controller: RemoteController) {
                 Banner(notice, Tone.Bad)
             }
             Spacer(Modifier.height(14.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            if (pending == null) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(
+                        value = paste,
+                        onValueChange = { paste = it },
+                        placeholder = { Text("或粘贴 tocode-app:// 配对内容") },
+                        singleLine = true,
+                        shape = RoundedCornerShape(14.dp),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = Pine,
+                            unfocusedBorderColor = Hairline,
+                            cursorColor = Pine,
+                        ),
+                        modifier = Modifier.weight(1f),
+                    )
+                    Spacer(Modifier.width(10.dp))
+                    PrimaryButton(
+                        text = "下一步",
+                        onClick = { controller.submitCode(paste) },
+                        enabled = paste.isNotBlank(),
+                        busy = pairing,
+                    )
+                }
+            } else {
                 OutlinedTextField(
-                    value = paste,
-                    onValueChange = { paste = it },
-                    placeholder = { Text("或粘贴 tocode-app:// 配对内容") },
+                    value = bindingKey,
+                    onValueChange = { bindingKey = it },
+                    placeholder = { Text("该 Mac 的绑定密钥") },
                     singleLine = true,
                     shape = RoundedCornerShape(14.dp),
                     colors = OutlinedTextFieldDefaults.colors(
@@ -211,15 +253,25 @@ fun ScanScreen(controller: RemoteController) {
                         unfocusedBorderColor = Hairline,
                         cursorColor = Pine,
                     ),
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier.fillMaxWidth(),
                 )
-                Spacer(Modifier.width(10.dp))
-                PrimaryButton(
-                    text = "绑定",
-                    onClick = { controller.submitCode(paste) },
-                    enabled = paste.isNotBlank(),
-                    busy = pairing,
-                )
+                Spacer(Modifier.height(12.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    PrimaryButton(
+                        text = "重新扫码",
+                        onClick = controller::clearPendingPairing,
+                        enabled = !pairing,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Spacer(Modifier.width(10.dp))
+                    PrimaryButton(
+                        text = "完成绑定",
+                        onClick = { controller.confirmBindingKey(bindingKey) },
+                        enabled = bindingKey.isNotBlank(),
+                        busy = pairing,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
             }
         }
     }

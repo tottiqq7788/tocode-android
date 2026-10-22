@@ -94,6 +94,7 @@ class RemoteController(
     var scanning by mutableStateOf(false)
     var pairing by mutableStateOf(false)
     var scanNotice by mutableStateOf("")
+    var pendingPairing by mutableStateOf<PairingPayload?>(null)
     var selectedId by mutableStateOf(directory.currentId)
     private var linkVersion by mutableIntStateOf(0)
     val online = mutableStateMapOf<String, Boolean>()
@@ -152,6 +153,8 @@ class RemoteController(
     fun closeScan() {
         scanning = false
         pairing = false
+        pendingPairing = null
+        scanNotice = ""
     }
 
     fun select(id: String) {
@@ -711,13 +714,36 @@ class RemoteController(
         val payload = parsePairingPayload(raw)
         if (payload == null) {
             scanNotice = "这不是 Tocode 的配对二维码"
+            pendingPairing = null
+            return
+        }
+        pendingPairing = payload
+        scanNotice = ""
+    }
+
+    fun confirmBindingKey(bindingKey: String) {
+        if (pairing) return
+        val payload = pendingPairing
+        if (payload == null) {
+            scanNotice = "请先扫描或粘贴配对二维码"
+            return
+        }
+        val secret = bindingKey.trim()
+        if (secret.isEmpty()) {
+            scanNotice = "请输入该 Mac 的绑定密钥"
             return
         }
         pairing = true
         scanNotice = ""
         worker.execute {
             runCatching {
-                client.redeem(payload.relay, payload.code, phone.androidId, phone.androidName)
+                client.redeem(
+                    payload.relay,
+                    payload.code,
+                    phone.androidId,
+                    phone.androidName,
+                    secret,
+                )
             }.onSuccess { link ->
                 main.post {
                     directory.upsert(link)
@@ -725,16 +751,29 @@ class RemoteController(
                     selectedId = link.id
                     scanning = false
                     pairing = false
+                    pendingPairing = null
                     persist()
                     connect(link)
                 }
-            }.onFailure {
+            }.onFailure { error ->
                 main.post {
                     pairing = false
-                    scanNotice = "绑定失败：二维码可能已过期，请在 Mac 上重新生成"
+                    val reason = error.message.orEmpty()
+                    scanNotice = when {
+                        reason == "unauthorized" -> "绑定密钥错误，或二维码已失效"
+                        reason == "expired" || reason == "used" || reason == "not_found" ->
+                            "绑定失败：二维码可能已过期，请在 Mac 上重新生成"
+                        else -> "绑定失败：二维码可能已过期，请在 Mac 上重新生成"
+                    }
                 }
             }
         }
+    }
+
+    fun clearPendingPairing() {
+        if (pairing) return
+        pendingPairing = null
+        scanNotice = ""
     }
 
     fun send(action: String, title: String, target: JSONObject? = null) {
