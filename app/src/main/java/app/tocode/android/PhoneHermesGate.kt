@@ -281,6 +281,20 @@ data class FolderPage(
     val loaded: Boolean = false,
 )
 
+/** Whether a tree request for this page/offset may start. Force only applies to offset 0. */
+fun canStartFolderLoad(page: FolderPage?, offset: Int, force: Boolean = false): Boolean {
+    if (offset == 0) {
+        if (page?.loadingOffset != null) return false
+        if (force) return true
+        return page?.loaded != true
+    }
+    return page != null &&
+        page.loaded &&
+        page.truncated &&
+        page.loadingOffset == null &&
+        offset == page.next
+}
+
 fun absoluteProjectPath(root: String, relative: String): String? {
     if (!root.startsWith("/") || root.contains('\u0000')) return null
     val base = root.trimEnd('/')

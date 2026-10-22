@@ -122,6 +122,20 @@ class LinkDirectoryTest {
     }
 
     @Test
+    fun forceReloadAllowsTreeRequestAfterFolderAlreadyLoaded() {
+        val loaded = FolderPage(next = 2, truncated = false, loaded = true)
+        assertFalse(canStartFolderLoad(loaded, 0))
+        assertTrue(canStartFolderLoad(loaded, 0, force = true))
+        assertFalse(canStartFolderLoad(loaded.copy(loadingOffset = 0), 0, force = true))
+        assertTrue(canStartFolderLoad(null, 0))
+        assertTrue(canStartFolderLoad(null, 0, force = true))
+        val page = FolderPage(next = 2, truncated = true, loaded = true)
+        assertTrue(canStartFolderLoad(page, 2))
+        assertTrue(canStartFolderLoad(page, 2, force = true))
+        assertFalse(canStartFolderLoad(page, 1))
+    }
+
+    @Test
     fun replyPathsLinkTheLongestProjectEntry() {
         val entries = listOf(
             AppEntry("chapters", "chapters", "directory"),

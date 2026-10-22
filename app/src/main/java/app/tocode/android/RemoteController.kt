@@ -997,18 +997,40 @@ class RemoteController(
         desk.directoryPath = ""
     }
 
+    /** Drop cached listings but keep the folder the user is viewing. */
+    private fun invalidateDirectory(desk: AppDesk) {
+        desk.entries = emptyList()
+        desk.folderPages = emptyMap()
+        desk.treeNotice = ""
+        desk.treeLoaded = false
+    }
+
+    /** After a chat round finishes, re-read the folder currently on screen. */
+    private fun refreshDirectoryAfterChat(linkId: String) {
+        val desk = desks[linkId] ?: return
+        if (desk.openProject == null) return
+        val path = desk.directoryPath
+        if (desk.folderPages[path]?.loadingOffset != null) return
+        invalidateDirectory(desk)
+        loadFolder(linkId, desk, path, 0, force = true)
+    }
+
     private fun loadTree(id: String, desk: AppDesk) {
         val page = desk.folderPages[""]
-        if (page?.loaded == true || page?.loadingOffset != null) return
+        if (!canStartFolderLoad(page, 0)) return
         loadFolder(id, desk, "", 0)
     }
 
-    private fun loadFolder(id: String, desk: AppDesk, path: String, offset: Int) {
+    private fun loadFolder(id: String, desk: AppDesk, path: String, offset: Int, force: Boolean = false) {
         val project = desk.openProject ?: return
         val current = desk.folderPages[path]
-        if (offset == 0 && (current?.loaded == true || current?.loadingOffset != null)) return
-        if (offset > 0 && (current == null || !current.loaded || !current.truncated || current.loadingOffset != null || offset != current.next)) return
-        desk.folderPages = desk.folderPages + (path to (current ?: FolderPage()).copy(loadingOffset = offset))
+        if (!canStartFolderLoad(current, offset, force)) return
+        val base = if (force && offset == 0) FolderPage() else (current ?: FolderPage())
+        desk.folderPages = desk.folderPages + (path to base.copy(loadingOffset = offset, loaded = false, truncated = false, next = if (force && offset == 0) 0 else base.next))
+        if (force && offset == 0) {
+            desk.entries = desk.entries.filter { it.parent() != path }
+            desk.treeLoaded = false
+        }
         val request = sendApp(
             id,
             "tree",
@@ -1362,13 +1384,16 @@ class RemoteController(
             }
             "sessions" -> {
                 if (body.has("model")) desk.model = body.optString("model")
+                val hadRunning = desk.sessions.any { it.running } || desk.inflight.isNotEmpty()
                 desk.sessions = parseSessions(body).map { row ->
                     if (desk.inflight.containsKey(row.id)) row.copy(running = true) else row
                 }
                 desk.sessionsLoaded = true
                 val project = desk.openProject
                 if (project != null && project.id == wait.projectId) syncProject(linkId, project, desk.sessions)
+                val nowRunning = desk.sessions.any { it.running } || desk.inflight.isNotEmpty()
                 if (desk.sessions.any { it.running } || desk.inflight.isNotEmpty()) watchRunning(linkId)
+                if (hadRunning && !nowRunning) refreshDirectoryAfterChat(linkId)
             }
             "session_create" -> {
                 desk.creating = false
@@ -1438,6 +1463,7 @@ class RemoteController(
                 val progressed = stored.size > current.turns.size
                 desk.transcripts = desk.transcripts + (wait.sessionId to SessionTranscript(stored, exhausted))
                 if (desk.openSession?.id == wait.sessionId) {
+                    val wasRunning = desk.openSession?.running == true || desk.inflight.containsKey(wait.sessionId)
                     val running = body.optBoolean("running") || desk.inflight.containsKey(wait.sessionId)
                     val pending = desk.pendingText
                     var display = stored
@@ -1455,6 +1481,7 @@ class RemoteController(
                         val edge = incoming.minOfOrNull { it.id }?.takeIf { more && it > 0 }
                         syncMessages(linkId, wait.sessionId, preferTail = false, olderThan = edge)
                     }
+                    if (wasRunning && !running) refreshDirectoryAfterChat(linkId)
                 }
             }
             "chat" -> if (desk.inflight[wait.sessionId] == requestId || desk.chatRequest == requestId) {
@@ -1478,6 +1505,7 @@ class RemoteController(
                     else desk.openSession = open?.copy(running = false)
                     syncMessages(linkId, wait.sessionId, preferTail = true)
                 }
+                refreshDirectoryAfterChat(linkId)
             }
             "preview" -> {
                 val current = desk.preview ?: return
