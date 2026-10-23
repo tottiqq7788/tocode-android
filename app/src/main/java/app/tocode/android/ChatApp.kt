@@ -195,8 +195,10 @@ private val tabs = listOf(
 @Composable
 private fun DeviceScreen(controller: RemoteController, link: AppLink, desk: AppDesk) {
     var showSheet by remember { mutableStateOf(false) }
-    var showProjects by remember { mutableStateOf(false) }
+    var profileDrawer by remember { mutableStateOf(ProfileDrawer.None) }
     var pickFolder by remember { mutableStateOf(false) }
+    val showProjects = profileDrawer == ProfileDrawer.Projects
+    val showModels = profileDrawer == ProfileDrawer.Models
     var chosenFolder by remember { mutableStateOf<String?>(null) }
     var unlinkTarget by remember { mutableStateOf<AppLink?>(null) }
     val online = controller.online[link.id]
@@ -222,7 +224,7 @@ private fun DeviceScreen(controller: RemoteController, link: AppLink, desk: AppD
                 desk = desk,
                 state = linkState(online, desk),
                 onSwitch = { showSheet = true },
-                onProjects = { showProjects = true },
+                onProjects = { profileDrawer = ProfileDrawer.Projects },
             )
         },
         bottomBar = {
@@ -266,7 +268,7 @@ private fun DeviceScreen(controller: RemoteController, link: AppLink, desk: AppD
                     online,
                     path = desk.directoryPath,
                     onPath = { controller.openDirectory(link.id, it) },
-                    onPickProject = { showProjects = true },
+                    onPickProject = { profileDrawer = ProfileDrawer.Projects },
                 )
                 "buttons" -> ControlTab(controller, link, online)
                 else -> SessionsTab(
@@ -295,11 +297,23 @@ private fun DeviceScreen(controller: RemoteController, link: AppLink, desk: AppD
             controller = controller,
             link = link,
             desk = desk,
-            onDismiss = { showProjects = false },
+            onDismiss = { profileDrawer = ProfileDrawer.None },
+            onPickModel = {
+                profileDrawer = openModelDrawer(profileDrawer)
+                controller.loadModels(link.id)
+            },
             onNewProject = {
-                showProjects = false
+                profileDrawer = ProfileDrawer.None
                 pickFolder = true
             },
+        )
+    }
+    if (showModels) {
+        ModelSheet(
+            controller = controller,
+            link = link,
+            desk = desk,
+            onDismiss = { profileDrawer = dismissModelDrawer(profileDrawer) },
         )
     }
     chosenFolder?.let { folder ->
@@ -418,6 +432,7 @@ private fun ProjectSheet(
     link: AppLink,
     desk: AppDesk,
     onDismiss: () -> Unit,
+    onPickModel: () -> Unit,
     onNewProject: () -> Unit,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -489,8 +504,8 @@ private fun ProjectSheet(
                         .weight(1f, fill = false)
                         .widthIn(max = 220.dp)
                         .clip(RoundedCornerShape(16.dp))
-                        .border(1.dp, if (desk.modelsExpanded) Pine else Hairline, RoundedCornerShape(16.dp))
-                        .clickable(enabled = !desk.modelsLoading) { controller.toggleModelPicker(link.id) }
+                        .border(1.dp, Hairline, RoundedCornerShape(16.dp))
+                        .clickable(onClick = onPickModel)
                         .padding(horizontal = 12.dp, vertical = 12.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
@@ -505,7 +520,7 @@ private fun ProjectSheet(
                     Spacer(Modifier.width(4.dp))
                     Icon(
                         Icons.Outlined.KeyboardArrowDown,
-                        contentDescription = if (desk.modelsExpanded) "收起模型" else "展开模型",
+                        contentDescription = "选择模型",
                         tint = Slate,
                         modifier = Modifier.size(18.dp),
                     )
@@ -524,60 +539,88 @@ private fun ProjectSheet(
                     Text("新建项目", style = MaterialTheme.typography.labelLarge, color = Pine)
                 }
             }
-            if (desk.modelsExpanded) {
-                Spacer(Modifier.height(10.dp))
-                Text("之后新建的对话用这个模型", style = MaterialTheme.typography.bodySmall, color = Slate)
-                Spacer(Modifier.height(8.dp))
-                when {
-                    desk.modelsLoading && desk.modelProviders.isEmpty() -> {
-                        Text("正在读取模型…", style = MaterialTheme.typography.bodyMedium, color = Slate)
-                    }
-                    desk.modelsNotice.isNotBlank() && desk.modelProviders.isEmpty() -> {
-                        Text(desk.modelsNotice, style = MaterialTheme.typography.bodyMedium, color = Slate)
-                    }
-                    else -> Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(max = 240.dp)
-                            .verticalScroll(rememberScrollState()),
-                    ) {
-                        desk.modelProviders.forEach { provider ->
-                            Text(
-                                provider.name,
-                                style = MaterialTheme.typography.labelMedium,
-                                color = Slate,
-                                modifier = Modifier.padding(top = 8.dp, bottom = 4.dp),
-                            )
-                            provider.models.forEach { modelName ->
-                                val selected = modelName == desk.model && provider.id == desk.modelProvider
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clip(RoundedCornerShape(12.dp))
-                                        .clickable(enabled = !desk.modelsLoading) {
-                                            controller.selectModel(link.id, provider.id, modelName)
-                                        }
-                                        .padding(horizontal = 10.dp, vertical = 10.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                ) {
-                                    Text(
-                                        modelName,
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        color = Ink,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                        modifier = Modifier.weight(1f),
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ModelSheet(
+    controller: RemoteController,
+    link: AppLink,
+    desk: AppDesk,
+    onDismiss: () -> Unit,
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val openedAt = remember { desk.modelPickSeq }
+    LaunchedEffect(desk.modelPickSeq) {
+        if (desk.modelPickSeq > openedAt) onDismiss()
+    }
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState, containerColor = Paper) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 24.dp),
+        ) {
+            Text("选择模型", style = MaterialTheme.typography.titleLarge, color = Ink)
+            Spacer(Modifier.height(4.dp))
+            Text("之后新建的对话用这个模型", style = MaterialTheme.typography.bodyMedium, color = Slate)
+            Spacer(Modifier.height(16.dp))
+            when {
+                desk.modelsLoading && desk.modelProviders.isEmpty() -> {
+                    Text("正在读取模型…", style = MaterialTheme.typography.bodyMedium, color = Slate)
+                }
+                desk.modelsNotice.isNotBlank() && desk.modelProviders.isEmpty() -> {
+                    Text(desk.modelsNotice, style = MaterialTheme.typography.bodyMedium, color = Slate)
+                }
+                else -> Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 480.dp)
+                        .verticalScroll(rememberScrollState()),
+                ) {
+                    desk.modelProviders.forEach { provider ->
+                        Text(
+                            provider.name,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = Slate,
+                            modifier = Modifier.padding(top = 8.dp, bottom = 4.dp),
+                        )
+                        provider.models.forEach { modelName ->
+                            val selected = modelName == desk.model && provider.id == desk.modelProvider
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .border(
+                                        if (selected) 1.5.dp else 0.dp,
+                                        if (selected) Pine else Color.Transparent,
+                                        RoundedCornerShape(12.dp),
                                     )
-                                    if (selected) {
-                                        Icon(Icons.Outlined.CheckCircle, contentDescription = "当前", tint = Pine)
+                                    .clickable(enabled = !desk.modelsLoading) {
+                                        controller.selectModel(link.id, provider.id, modelName)
                                     }
+                                    .padding(horizontal = 12.dp, vertical = 12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    modelName,
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    color = Ink,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                if (selected) {
+                                    Icon(Icons.Outlined.CheckCircle, contentDescription = "当前", tint = Pine)
                                 }
                             }
                         }
-                        if (desk.modelsNotice.isNotBlank()) {
-                            Spacer(Modifier.height(6.dp))
-                            Text(desk.modelsNotice, style = MaterialTheme.typography.bodySmall, color = Slate)
-                        }
+                    }
+                    if (desk.modelsNotice.isNotBlank()) {
+                        Spacer(Modifier.height(8.dp))
+                        Text(desk.modelsNotice, style = MaterialTheme.typography.bodySmall, color = Slate)
                     }
                 }
             }

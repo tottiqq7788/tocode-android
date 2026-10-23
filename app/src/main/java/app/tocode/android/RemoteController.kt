@@ -20,8 +20,9 @@ class AppDesk {
     var modelProvider by mutableStateOf("")
     var modelProviders by mutableStateOf<List<AppModelProvider>>(emptyList())
     var modelsLoading by mutableStateOf(false)
-    var modelsExpanded by mutableStateOf(false)
     var modelsNotice by mutableStateOf("")
+    /** 选中模型成功（含点当前项）后递增，供独立模型抽屉关闭。 */
+    var modelPickSeq by mutableIntStateOf(0)
     var profile by mutableStateOf("default")
     var profiles by mutableStateOf<List<String>>(emptyList())
     var projects by mutableStateOf<List<AppProject>>(emptyList())
@@ -262,23 +263,10 @@ class RemoteController(
         desk.projects = emptyList()
         desk.projectsLoaded = false
         desk.modelProviders = emptyList()
-        desk.modelsExpanded = false
         desk.modelsLoading = false
         desk.modelsNotice = ""
         desk.notice = ""
         sendApp(id, "profile_select", profile = name, quiet = true)
-    }
-
-    fun toggleModelPicker(id: String) {
-        val desk = desk(id)
-        if (desk.modelsExpanded) {
-            desk.modelsExpanded = false
-            return
-        }
-        desk.modelsExpanded = true
-        desk.modelsNotice = ""
-        if (desk.modelProviders.isNotEmpty() || desk.modelsLoading) return
-        loadModels(id)
     }
 
     fun loadModels(id: String) {
@@ -299,7 +287,7 @@ class RemoteController(
         val desk = desk(id)
         if (!desk.canChat || desk.modelsLoading) return
         if (model == desk.model && provider == desk.modelProvider) {
-            desk.modelsExpanded = false
+            desk.modelPickSeq += 1
             return
         }
         desk.modelsLoading = true
@@ -1652,7 +1640,6 @@ class RemoteController(
                     desk.sessionsLoaded = false
                     clearTree(desk)
                     desk.modelProviders = emptyList()
-                    desk.modelsExpanded = false
                 }
                 if (desk.canChat) {
                     sendApp(linkId, "projects", profile = desk.profile, quiet = true)
@@ -1678,7 +1665,6 @@ class RemoteController(
                 desk.projects = parseProjects(body)
                 desk.projectsLoaded = true
                 desk.modelProviders = emptyList()
-                desk.modelsExpanded = false
                 desk.modelsLoading = false
                 desk.modelsNotice = ""
                 if (text.isNotBlank()) desk.notice = text
@@ -1702,8 +1688,8 @@ class RemoteController(
                 desk.modelsLoading = false
                 if (body.has("model")) desk.model = body.optString("model")
                 if (body.has("provider")) desk.modelProvider = body.optString("provider")
-                desk.modelsExpanded = false
                 desk.modelsNotice = ""
+                desk.modelPickSeq += 1
                 if (text.isNotBlank()) desk.notice = text
             }
             "project_create" -> {

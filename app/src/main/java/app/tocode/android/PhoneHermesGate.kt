@@ -448,6 +448,19 @@ fun acceptedModelProviders(id: String, name: String, models: List<String>): List
     return listOf(AppModelProvider(id, name.ifBlank { id }, cleaned))
 }
 
+/** 档案抽屉与模型抽屉顺序切换，不叠两层。 */
+enum class ProfileDrawer {
+    None,
+    Projects,
+    Models,
+}
+
+fun openModelDrawer(from: ProfileDrawer): ProfileDrawer =
+    if (from == ProfileDrawer.Projects || from == ProfileDrawer.None) ProfileDrawer.Models else from
+
+fun dismissModelDrawer(from: ProfileDrawer): ProfileDrawer =
+    if (from == ProfileDrawer.Models) ProfileDrawer.Projects else from
+
 fun parseSessions(body: JSONObject): List<AppSession> {
     val rows = body.optJSONArray("sessions") ?: return emptyList()
     return buildList {

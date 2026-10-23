@@ -350,6 +350,14 @@ class LinkDirectoryTest {
         assertTrue(acceptedModelProviders("", "Nope", listOf("x")).isEmpty())
     }
 
+    @Test
+    fun modelDrawerReplacesProjectsDrawer() {
+        assertEquals(ProfileDrawer.Models, openModelDrawer(ProfileDrawer.Projects))
+        assertEquals(ProfileDrawer.Projects, dismissModelDrawer(ProfileDrawer.Models))
+        assertEquals(ProfileDrawer.Models, openModelDrawer(ProfileDrawer.None))
+        assertFalse(openModelDrawer(ProfileDrawer.Projects) == ProfileDrawer.Projects)
+    }
+
     private fun link(id: String, mac: String) = AppLink(
         id = id,
         macName = mac,
