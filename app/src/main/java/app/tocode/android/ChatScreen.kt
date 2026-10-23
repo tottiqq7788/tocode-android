@@ -933,7 +933,7 @@ private fun MessageList(
     LaunchedEffect(sessionID, pageIndex, blocks.size, showTyping) {
         if (placed || tail < 0) return@LaunchedEffect
         snapshotFlow { listState.layoutInfo.totalItemsCount }.first { it > 0 }
-        listState.scrollToItem(0)
+        listState.scrollToItem(tail)
         placed = true
     }
     LazyColumn(

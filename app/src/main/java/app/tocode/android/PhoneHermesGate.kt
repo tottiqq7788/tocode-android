@@ -6,6 +6,8 @@ data class AppSession(val id: String, val title: String, val running: Boolean = 
 
 data class AppProject(val id: String, val name: String)
 
+data class AppModelProvider(val id: String, val name: String, val models: List<String>)
+
 data class AppTurn(val role: String, val text: String, val interim: Boolean = false, val id: Long = 0)
 
 sealed class ChatBlock {
@@ -42,12 +44,16 @@ fun chatBlocks(turns: List<AppTurn>): List<ChatBlock> {
 
 data class Exchange(val blocks: List<ChatBlock>)
 
-/** 一次提问，加上它后面的过程回复和结束回复，算一页。 */
+/** 一次提问，加上它后面的过程回复和结束回复，算一页。连续相同提问并进同一页。 */
 fun exchanges(blocks: List<ChatBlock>): List<Exchange> {
     if (blocks.isEmpty()) return emptyList()
     val pages = mutableListOf<MutableList<ChatBlock>>()
     for (block in blocks) {
-        if (block is ChatBlock.User || pages.isEmpty()) {
+        if (block is ChatBlock.User) {
+            val lastUser = pages.lastOrNull()?.filterIsInstance<ChatBlock.User>()?.firstOrNull()
+            if (lastUser != null && lastUser.text == block.text) continue
+            pages.add(mutableListOf(block))
+        } else if (pages.isEmpty()) {
             pages.add(mutableListOf(block))
         } else {
             pages.last().add(block)
@@ -414,6 +420,32 @@ fun parseProjects(body: JSONObject): List<AppProject> {
             add(AppProject(id, row.optString("name").ifBlank { "未命名项目" }))
         }
     }
+}
+
+fun parseModelProviders(body: JSONObject): List<AppModelProvider> {
+    val rows = body.optJSONArray("providers") ?: return emptyList()
+    return buildList {
+        for (index in 0 until rows.length()) {
+            val row = rows.optJSONObject(index) ?: continue
+            val id = row.optString("id").ifBlank { row.optString("slug") }
+            if (id.isBlank()) continue
+            val modelsArray = row.optJSONArray("models") ?: continue
+            val models = buildList {
+                for (modelIndex in 0 until modelsArray.length()) {
+                    val name = modelsArray.optString(modelIndex)
+                    if (name.isNotBlank()) add(name)
+                }
+            }
+            addAll(acceptedModelProviders(id, row.optString("name"), models))
+        }
+    }
+}
+
+/** 只留下有模型名的厂家；空清单丢掉。不读密钥字段。 */
+fun acceptedModelProviders(id: String, name: String, models: List<String>): List<AppModelProvider> {
+    val cleaned = models.map { it.trim() }.filter { it.isNotEmpty() }
+    if (id.isBlank() || cleaned.isEmpty()) return emptyList()
+    return listOf(AppModelProvider(id, name.ifBlank { id }, cleaned))
 }
 
 fun parseSessions(body: JSONObject): List<AppSession> {

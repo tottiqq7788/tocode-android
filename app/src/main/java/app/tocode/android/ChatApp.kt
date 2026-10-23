@@ -479,18 +479,107 @@ private fun ProjectSheet(
             }
             Spacer(Modifier.height(12.dp))
             Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(16.dp))
-                    .border(1.dp, Hairline, RoundedCornerShape(16.dp))
-                    .clickable(enabled = !desk.creating, onClick = onNewProject)
-                    .padding(vertical = 15.dp),
-                horizontalArrangement = Arrangement.Center,
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Icon(Icons.Outlined.Add, contentDescription = null, tint = Pine)
-                Spacer(Modifier.width(8.dp))
-                Text("新建项目", style = MaterialTheme.typography.labelLarge, color = Pine)
+                val modelLabel = desk.model.ifBlank { "选择模型" }
+                Row(
+                    modifier = Modifier
+                        .weight(1f, fill = false)
+                        .widthIn(max = 220.dp)
+                        .clip(RoundedCornerShape(16.dp))
+                        .border(1.dp, if (desk.modelsExpanded) Pine else Hairline, RoundedCornerShape(16.dp))
+                        .clickable(enabled = !desk.modelsLoading) { controller.toggleModelPicker(link.id) }
+                        .padding(horizontal = 12.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        modelLabel,
+                        style = MaterialTheme.typography.labelLarge,
+                        color = Ink,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Icon(
+                        Icons.Outlined.KeyboardArrowDown,
+                        contentDescription = if (desk.modelsExpanded) "收起模型" else "展开模型",
+                        tint = Slate,
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
+                Spacer(Modifier.width(12.dp))
+                Row(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(16.dp))
+                        .border(1.dp, Hairline, RoundedCornerShape(16.dp))
+                        .clickable(enabled = !desk.creating, onClick = onNewProject)
+                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(Icons.Outlined.Add, contentDescription = null, tint = Pine, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("新建项目", style = MaterialTheme.typography.labelLarge, color = Pine)
+                }
+            }
+            if (desk.modelsExpanded) {
+                Spacer(Modifier.height(10.dp))
+                Text("之后新建的对话用这个模型", style = MaterialTheme.typography.bodySmall, color = Slate)
+                Spacer(Modifier.height(8.dp))
+                when {
+                    desk.modelsLoading && desk.modelProviders.isEmpty() -> {
+                        Text("正在读取模型…", style = MaterialTheme.typography.bodyMedium, color = Slate)
+                    }
+                    desk.modelsNotice.isNotBlank() && desk.modelProviders.isEmpty() -> {
+                        Text(desk.modelsNotice, style = MaterialTheme.typography.bodyMedium, color = Slate)
+                    }
+                    else -> Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 240.dp)
+                            .verticalScroll(rememberScrollState()),
+                    ) {
+                        desk.modelProviders.forEach { provider ->
+                            Text(
+                                provider.name,
+                                style = MaterialTheme.typography.labelMedium,
+                                color = Slate,
+                                modifier = Modifier.padding(top = 8.dp, bottom = 4.dp),
+                            )
+                            provider.models.forEach { modelName ->
+                                val selected = modelName == desk.model && provider.id == desk.modelProvider
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .clickable(enabled = !desk.modelsLoading) {
+                                            controller.selectModel(link.id, provider.id, modelName)
+                                        }
+                                        .padding(horizontal = 10.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Text(
+                                        modelName,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = Ink,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                    if (selected) {
+                                        Icon(Icons.Outlined.CheckCircle, contentDescription = "当前", tint = Pine)
+                                    }
+                                }
+                            }
+                        }
+                        if (desk.modelsNotice.isNotBlank()) {
+                            Spacer(Modifier.height(6.dp))
+                            Text(desk.modelsNotice, style = MaterialTheme.typography.bodySmall, color = Slate)
+                        }
+                    }
+                }
             }
         }
     }

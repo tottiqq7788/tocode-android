@@ -17,6 +17,11 @@ class AppDesk {
     var installed by mutableStateOf<Boolean?>(null)
     var running by mutableStateOf(false)
     var model by mutableStateOf("")
+    var modelProvider by mutableStateOf("")
+    var modelProviders by mutableStateOf<List<AppModelProvider>>(emptyList())
+    var modelsLoading by mutableStateOf(false)
+    var modelsExpanded by mutableStateOf(false)
+    var modelsNotice by mutableStateOf("")
     var profile by mutableStateOf("default")
     var profiles by mutableStateOf<List<String>>(emptyList())
     var projects by mutableStateOf<List<AppProject>>(emptyList())
@@ -256,8 +261,53 @@ class RemoteController(
         clearTree(desk)
         desk.projects = emptyList()
         desk.projectsLoaded = false
+        desk.modelProviders = emptyList()
+        desk.modelsExpanded = false
+        desk.modelsLoading = false
+        desk.modelsNotice = ""
         desk.notice = ""
         sendApp(id, "profile_select", profile = name, quiet = true)
+    }
+
+    fun toggleModelPicker(id: String) {
+        val desk = desk(id)
+        if (desk.modelsExpanded) {
+            desk.modelsExpanded = false
+            return
+        }
+        desk.modelsExpanded = true
+        desk.modelsNotice = ""
+        if (desk.modelProviders.isNotEmpty() || desk.modelsLoading) return
+        loadModels(id)
+    }
+
+    fun loadModels(id: String) {
+        val desk = desk(id)
+        if (!desk.canChat) {
+            desk.modelsNotice = hermesClosedText(desk)
+            return
+        }
+        desk.modelsLoading = true
+        desk.modelsNotice = ""
+        if (sendApp(id, "models", profile = desk.profile, quiet = true) == null) {
+            desk.modelsLoading = false
+            desk.modelsNotice = "这台 Mac 还没连上，正在重连…"
+        }
+    }
+
+    fun selectModel(id: String, provider: String, model: String) {
+        val desk = desk(id)
+        if (!desk.canChat || desk.modelsLoading) return
+        if (model == desk.model && provider == desk.modelProvider) {
+            desk.modelsExpanded = false
+            return
+        }
+        desk.modelsLoading = true
+        desk.modelsNotice = ""
+        if (sendApp(id, "model_select", title = provider, text = model, profile = desk.profile, quiet = true) == null) {
+            desk.modelsLoading = false
+            desk.modelsNotice = "这台 Mac 还没连上，正在重连…"
+        }
     }
 
     fun openProject(id: String, project: AppProject) {
@@ -1515,6 +1565,11 @@ class RemoteController(
                 desk.foldersNotice = text
                 return
             }
+            "models", "model_select" -> {
+                desk.modelsLoading = false
+                desk.modelsNotice = text.ifBlank { "失败" }
+                return
+            }
             "download" -> {
                 desk.downloading = false
                 desk.notice = text
@@ -1588,6 +1643,7 @@ class RemoteController(
                 val names = parseNames(body)
                 if (names.isNotEmpty()) desk.profiles = names
                 if (body.has("model")) desk.model = body.optString("model")
+                if (body.has("provider")) desk.modelProvider = body.optString("provider")
                 val profile = body.optString("profile").ifBlank { "default" }
                 if (desk.profile != profile) {
                     desk.profile = profile
@@ -1595,6 +1651,8 @@ class RemoteController(
                     desk.sessions = emptyList()
                     desk.sessionsLoaded = false
                     clearTree(desk)
+                    desk.modelProviders = emptyList()
+                    desk.modelsExpanded = false
                 }
                 if (desk.canChat) {
                     sendApp(linkId, "projects", profile = desk.profile, quiet = true)
@@ -1609,6 +1667,7 @@ class RemoteController(
             }
             "profile_select" -> {
                 if (body.has("model")) desk.model = body.optString("model")
+                if (body.has("provider")) desk.modelProvider = body.optString("provider")
                 desk.profile = body.optString("profile").ifBlank { desk.profile }
                 val names = parseNames(body)
                 if (names.isNotEmpty()) desk.profiles = names
@@ -1618,11 +1677,34 @@ class RemoteController(
                 clearTree(desk)
                 desk.projects = parseProjects(body)
                 desk.projectsLoaded = true
+                desk.modelProviders = emptyList()
+                desk.modelsExpanded = false
+                desk.modelsLoading = false
+                desk.modelsNotice = ""
                 if (text.isNotBlank()) desk.notice = text
             }
             "projects" -> {
                 desk.projects = parseProjects(body)
                 desk.projectsLoaded = true
+            }
+            "models" -> {
+                desk.modelsLoading = false
+                if (body.has("model")) desk.model = body.optString("model")
+                if (body.has("provider")) desk.modelProvider = body.optString("provider")
+                desk.modelProviders = parseModelProviders(body)
+                desk.modelsNotice = if (desk.modelProviders.isEmpty()) {
+                    "这个档案暂时没有可用模型"
+                } else {
+                    ""
+                }
+            }
+            "model_select" -> {
+                desk.modelsLoading = false
+                if (body.has("model")) desk.model = body.optString("model")
+                if (body.has("provider")) desk.modelProvider = body.optString("provider")
+                desk.modelsExpanded = false
+                desk.modelsNotice = ""
+                if (text.isNotBlank()) desk.notice = text
             }
             "project_create" -> {
                 desk.creating = false

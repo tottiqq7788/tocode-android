@@ -249,6 +249,34 @@ class LinkDirectoryTest {
     }
 
     @Test
+    fun repeatedSameQuestionStaysOnePage() {
+        val pages = exchanges(
+            chatBlocks(
+                listOf(
+                    AppTurn("user", "同一句", id = 1),
+                    AppTurn("assistant", "先读", interim = true),
+                    AppTurn("assistant", "第一答"),
+                    AppTurn("user", "同一句", id = 2),
+                    AppTurn("assistant", "又在写", interim = true),
+                    AppTurn("assistant", "第二答"),
+                    AppTurn("user", "同一句", id = 3),
+                    AppTurn("assistant", "第三答"),
+                    AppTurn("user", "另一句", id = 4),
+                    AppTurn("assistant", "第四答"),
+                )
+            )
+        )
+        assertEquals(2, pages.size)
+        assertEquals("同一句", (pages[0].blocks[0] as ChatBlock.User).text)
+        assertEquals(1L, pageAnchor(pages[0]))
+        assertEquals(1, pages[0].blocks.count { it is ChatBlock.User })
+        assertEquals(2, pages[0].blocks.count { it is ChatBlock.Process })
+        assertEquals(3, pages[0].blocks.count { it is ChatBlock.Reply })
+        assertEquals("另一句", (pages[1].blocks[0] as ChatBlock.User).text)
+        assertEquals(2, pages[1].blocks.size)
+    }
+
+    @Test
     fun hermesTextAppendsRelativePathsAfterTheFilesLand() {
         assertEquals(
             "看一下\n\n对话附件-图片/a.jpg\n对话附件-文件/b.pdf",
@@ -306,6 +334,20 @@ class LinkDirectoryTest {
         assertTrue(chatEntranceClosed(false))
         assertFalse(chatEntranceClosed(true))
         assertFalse(chatEntranceClosed(null))
+    }
+
+    @Test
+    fun modelOptionsKeepOnlyProvidersWithNames() {
+        val kept = acceptedModelProviders(
+            "deepseek",
+            "DeepSeek",
+            listOf("deepseek-flash", "  ", "deepseek-chat"),
+        )
+        assertEquals(1, kept.size)
+        assertEquals("deepseek", kept[0].id)
+        assertEquals(listOf("deepseek-flash", "deepseek-chat"), kept[0].models)
+        assertTrue(acceptedModelProviders("empty", "Empty", emptyList()).isEmpty())
+        assertTrue(acceptedModelProviders("", "Nope", listOf("x")).isEmpty())
     }
 
     private fun link(id: String, mac: String) = AppLink(
