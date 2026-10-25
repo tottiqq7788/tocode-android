@@ -155,7 +155,7 @@ fun SessionsTab(
     ) {
         item { HermesHero(desk, online, onCreate) }
         if (desk.notice.isNotBlank()) {
-            item { Banner(desk.notice, Tone.Bad) }
+            item { Banner(desk.notice, if (chatNoticeToneIsWarn(desk.notice)) Tone.Warn else Tone.Bad) }
         }
         if (desk.canChat) {
             val project = desk.openProject
@@ -541,8 +541,8 @@ fun ChatScreen(controller: RemoteController, link: AppLink, desk: AppDesk, sessi
             onDirectory = { showFiles = true },
         )
         val banner = when {
-            desk.notice.isNotBlank() -> desk.notice to Tone.Bad
-            online == false -> "这台 Mac 离线了，正在重连…" to Tone.Bad
+            desk.notice.isNotBlank() -> desk.notice to if (chatNoticeToneIsWarn(desk.notice)) Tone.Warn else Tone.Bad
+            online == false -> "这台 Mac 离线了，正在重连…" to Tone.Warn
             desk.installed == true && !desk.running -> "这台电脑的 Hermes 没开" to Tone.Warn
             else -> null
         }

@@ -92,6 +92,31 @@ class LinkDirectoryTest {
     }
 
     @Test
+    fun disconnectKeepsChatWaitAndClearsReconnectAfterMessages() {
+        assertTrue(keepAppWaitOnDisconnect("chat"))
+        assertFalse(keepAppWaitOnDisconnect("download"))
+        assertTrue(quietDropOnDisconnect("messages"))
+        assertFalse(quietDropOnDisconnect("chat"))
+        assertFalse(quietDropOnDisconnect("download"))
+
+        assertEquals(
+            CHAT_RECONNECT_NOTICE,
+            noticeAfterDisconnect(keptChat = true, previousNotice = "和这台 Mac 的连接断开了"),
+        )
+        assertEquals(
+            "下载失败",
+            noticeAfterDisconnect(keptChat = false, previousNotice = "下载失败"),
+        )
+
+        assertTrue(shouldClearReconnectNotice(CHAT_RECONNECT_NOTICE, "messages"))
+        assertTrue(shouldClearReconnectNotice(CHAT_RECONNECT_NOTICE, "chat"))
+        assertFalse(shouldClearReconnectNotice(CHAT_RECONNECT_NOTICE, "download"))
+        assertFalse(shouldClearReconnectNotice("下载失败", "messages"))
+        assertTrue(chatNoticeToneIsWarn(CHAT_RECONNECT_NOTICE))
+        assertFalse(chatNoticeToneIsWarn("和这台 Mac 的连接断开了"))
+    }
+
+    @Test
     fun processLinesCollapseAheadOfTheClosingReply() {
         val blocks = chatBlocks(
             listOf(

@@ -1304,6 +1304,7 @@ class RemoteController(
                 }
                 if (connected) {
                     retryDelay.remove(link.id)
+                    resumeAfterReconnect(link.id)
                     refreshApp(link.id)
                 } else {
                     dropWaits(link.id)
@@ -1334,16 +1335,25 @@ class RemoteController(
 
     private fun dropWaits(linkId: String) {
         val lost = appWait.filterValues { it.linkId == linkId }
+        val keptChat = lost.values.any { keepAppWaitOnDisconnect(it.kind) }
         DiagnosticLog.event(
             "drop_waits",
             linkId = linkId,
             detail = mapOf(
                 "app_count" to lost.size,
                 "kinds" to lost.values.map { it.kind }.distinct().take(12),
+                "kept_chat" to keptChat,
             ),
         )
         lost.forEach { (requestId, wait) ->
+            if (keepAppWaitOnDisconnect(wait.kind)) return@forEach
             appWait.remove(requestId)
+            if (quietDropOnDisconnect(wait.kind)) {
+                if (desk(linkId).openSession?.id == wait.sessionId) {
+                    desk(linkId).turnsLoading = false
+                }
+                return@forEach
+            }
             failApp(wait, requestId, "和这台 Mac 的连接断开了")
         }
         fileJobs.clear()
@@ -1353,13 +1363,30 @@ class RemoteController(
         }
         fileJobActive = false
         if (inboundDownload?.linkId == linkId) inboundDownload = null
-        if (lostFiles.isNotEmpty()) desk(linkId).notice = "和这台 Mac 的连接断开了"
+        val desk = desk(linkId)
+        if (keptChat) {
+            desk.notice = noticeAfterDisconnect(keptChat = true, previousNotice = desk.notice)
+        } else if (lostFiles.isNotEmpty()) {
+            desk.notice = "和这台 Mac 的连接断开了"
+        }
         followUp.remove(linkId)
         pressedButton.remove(linkId)
         if (pending.remove(linkId) != null) {
             pendingAction.remove(linkId)
             lastResult[linkId] = "和这台 Mac 的连接断开了"
             lastOk[linkId] = false
+        }
+    }
+
+    private fun resumeAfterReconnect(linkId: String) {
+        val desk = desks[linkId] ?: return
+        if (shouldClearReconnectNotice(desk.notice, "messages")) {
+            desk.notice = ""
+        }
+        val session = desk.openSession?.takeIf { it.id.isNotEmpty() } ?: return
+        if (desk.inflight.containsKey(session.id) || session.running) {
+            syncMessages(linkId, session.id, preferTail = true)
+            watchRunning(linkId)
         }
     }
 
@@ -1534,7 +1561,10 @@ class RemoteController(
                     desk.pendingText = ""
                 }
             }
-            "messages" -> desk.turnsLoading = false
+            "messages" -> {
+                desk.turnsLoading = false
+                return
+            }
             "tree" -> {
                 if (desk.openProject?.id == wait.projectId) {
                     desk.treeLoaded = true
@@ -1622,6 +1652,9 @@ class RemoteController(
             return
         }
         val desk = desk(linkId)
+        if (shouldClearReconnectNotice(desk.notice, wait.kind)) {
+            desk.notice = ""
+        }
         val body = message.optJSONObject("body") ?: JSONObject()
         DiagnosticLog.event(
             "app.result",
@@ -1796,6 +1829,15 @@ class RemoteController(
                 val progressed = stored.size > current.turns.size
                 desk.transcripts = desk.transcripts + (wait.sessionId to SessionTranscript(stored, exhausted))
                 if (desk.openSession?.id == wait.sessionId) {
+                    if (!body.optBoolean("running")) {
+                        val chatRequestId = desk.inflight[wait.sessionId]
+                        if (chatRequestId != null) {
+                            appWait.remove(chatRequestId)
+                            desk.inflight = desk.inflight - wait.sessionId
+                            if (desk.chatRequest == chatRequestId) desk.chatRequest = null
+                            desk.pendingText = ""
+                        }
+                    }
                     val wasRunning = desk.openSession?.running == true || desk.inflight.containsKey(wait.sessionId)
                     val running = body.optBoolean("running") || desk.inflight.containsKey(wait.sessionId)
                     val pending = desk.pendingText

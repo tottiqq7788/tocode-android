@@ -400,6 +400,24 @@ fun applyFolderSelectAll(childPaths: List<String>, selected: Set<String>): Set<S
     return selected - childPaths.toSet()
 }
 
+const val CHAT_RECONNECT_NOTICE = "正在重连，回复仍在这台 Mac 上"
+
+/** Keep a wait that already handed the round to Mac across a phone socket drop. */
+fun keepAppWaitOnDisconnect(kind: String): Boolean = kind == "chat"
+
+/** Drop a wait without writing a failure banner when the phone socket drops. */
+fun quietDropOnDisconnect(kind: String): Boolean = kind == "messages"
+
+fun noticeAfterDisconnect(
+    keptChat: Boolean,
+    previousNotice: String,
+): String = if (keptChat) CHAT_RECONNECT_NOTICE else previousNotice
+
+fun shouldClearReconnectNotice(notice: String, kind: String): Boolean =
+    notice == CHAT_RECONNECT_NOTICE && (kind == "messages" || kind == "chat")
+
+fun chatNoticeToneIsWarn(notice: String): Boolean = notice == CHAT_RECONNECT_NOTICE
+
 fun breadcrumb(path: String): List<String> {
     if (path.isEmpty()) return emptyList()
     val parts = path.split('/').filter { it.isNotEmpty() }
