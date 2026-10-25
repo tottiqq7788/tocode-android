@@ -1039,10 +1039,22 @@ class RemoteController(
         desk.selectedPaths = emptySet()
     }
 
-    fun toggleSelected(id: String, path: String) {
+    fun beginSelection(id: String) {
         val desk = desk(id)
         desk.selecting = true
+        desk.selectedPaths = emptySet()
+    }
+
+    fun toggleSelected(id: String, path: String) {
+        val desk = desk(id)
+        if (!desk.selecting) return
         desk.selectedPaths = if (path in desk.selectedPaths) desk.selectedPaths - path else desk.selectedPaths + path
+    }
+
+    fun toggleSelectAll(id: String, childPaths: List<String>) {
+        val desk = desk(id)
+        if (!desk.selecting) return
+        desk.selectedPaths = applyFolderSelectAll(childPaths, desk.selectedPaths)
     }
 
     fun downloadSelected(id: String) {

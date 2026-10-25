@@ -76,6 +76,22 @@ class LinkDirectoryTest {
     }
 
     @Test
+    fun folderSelectAllTouchesOnlyTheListedLayer() {
+        assertEquals(FolderSelectMark.None, folderSelectMark(emptyList(), setOf("other")))
+        assertEquals(setOf("other"), applyFolderSelectAll(emptyList(), setOf("other")))
+
+        val layer = listOf("a", "b")
+        assertEquals(FolderSelectMark.Some, folderSelectMark(layer, setOf("a", "other")))
+        val filled = applyFolderSelectAll(layer, setOf("a", "other"))
+        assertEquals(setOf("a", "b", "other"), filled)
+        assertEquals(FolderSelectMark.All, folderSelectMark(layer, filled))
+
+        val cleared = applyFolderSelectAll(layer, filled)
+        assertEquals(setOf("other"), cleared)
+        assertEquals(FolderSelectMark.None, folderSelectMark(layer, cleared))
+    }
+
+    @Test
     fun processLinesCollapseAheadOfTheClosingReply() {
         val blocks = chatBlocks(
             listOf(

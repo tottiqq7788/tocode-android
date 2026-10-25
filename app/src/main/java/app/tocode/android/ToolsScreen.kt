@@ -1,11 +1,9 @@
 package app.tocode.android
 
 import androidx.activity.compose.BackHandler
-import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.border
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -55,6 +53,7 @@ import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.FolderOff
 import androidx.compose.material.icons.outlined.Handyman
 import androidx.compose.material.icons.outlined.Home
+import androidx.compose.material.icons.outlined.IndeterminateCheckBox
 import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.InsertDriveFile
@@ -110,7 +109,6 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 
-@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun FilesTab(
     controller: RemoteController,
@@ -266,13 +264,15 @@ fun FilesTab(
         }
         item {
             Box(Modifier.padding(bottom = 12.dp)) {
-                SectionTitle(
-                    if (path.isEmpty()) project?.name ?: "项目根目录" else path.substringAfterLast('/'),
-                    when {
-                        desk.selecting -> "长按多选 · 点勾选切换 · 点文件夹仍可进入"
-                        page.truncated -> "已列出 ${children.size} 项 · 长按可多选下载"
-                        else -> "${children.size} 项 · 长按可多选下载"
-                    },
+                val childPaths = children.map { it.path }
+                DirectoryHeading(
+                    title = if (path.isEmpty()) project?.name ?: "项目根目录" else path.substringAfterLast('/'),
+                    countLabel = if (page.truncated) "已列出 ${children.size} 项" else "${children.size} 项",
+                    showActions = children.isNotEmpty(),
+                    selecting = desk.selecting,
+                    mark = folderSelectMark(childPaths, desk.selectedPaths),
+                    onDownload = { controller.beginSelection(link.id) },
+                    onSelectAll = { controller.toggleSelectAll(link.id, childPaths) },
                 )
             }
         }
@@ -330,9 +330,6 @@ fun FilesTab(
                         onOpen = {
                             if (entry.isFolder()) onPath(entry.path) else controller.openPreview(link.id, entry)
                         },
-                        onLongPress = {
-                            controller.toggleSelected(link.id, entry.path)
-                        },
                     )
                 }
             }
@@ -389,7 +386,69 @@ private fun Crumb(label: String, selected: Boolean, onClick: () -> Unit) {
     )
 }
 
-@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun DirectoryHeading(
+    title: String,
+    countLabel: String,
+    showActions: Boolean,
+    selecting: Boolean,
+    mark: FolderSelectMark,
+    onDownload: () -> Unit,
+    onSelectAll: () -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            title,
+            style = MaterialTheme.typography.titleSmall,
+            color = Ink,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+        )
+        if (!showActions) return@Row
+        Text(countLabel, style = MaterialTheme.typography.labelMedium, color = SlateLight)
+        Spacer(Modifier.width(8.dp))
+        if (!selecting) {
+            Text(
+                "下载文件",
+                style = MaterialTheme.typography.labelMedium,
+                color = Color.White,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(999.dp))
+                    .background(Ink)
+                    .clickable(onClick = onDownload)
+                    .padding(horizontal = 10.dp, vertical = 6.dp),
+            )
+            return@Row
+        }
+        val icon = when (mark) {
+            FolderSelectMark.All -> Icons.Outlined.CheckBox
+            FolderSelectMark.Some -> Icons.Outlined.IndeterminateCheckBox
+            FolderSelectMark.None -> Icons.Outlined.CheckBoxOutlineBlank
+        }
+        val description = when (mark) {
+            FolderSelectMark.All -> "已全选"
+            FolderSelectMark.Some -> "部分已选"
+            FolderSelectMark.None -> "全选"
+        }
+        Row(
+            modifier = Modifier
+                .clip(RoundedCornerShape(999.dp))
+                .border(1.dp, Hairline, RoundedCornerShape(999.dp))
+                .clickable(onClick = onSelectAll)
+                .padding(start = 6.dp, end = 10.dp, top = 4.dp, bottom = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(icon, contentDescription = description, tint = if (mark == FolderSelectMark.None) SlateLight else Ink, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(4.dp))
+            Text("全选", style = MaterialTheme.typography.labelMedium, color = Ink)
+        }
+    }
+}
+
 @Composable
 private fun EntryRow(
     entry: AppEntry,
@@ -399,20 +458,11 @@ private fun EntryRow(
     onToggle: () -> Unit,
     onCite: () -> Unit,
     onOpen: () -> Unit,
-    onLongPress: () -> Unit,
 ) {
     val folder = entry.isFolder()
     val ext = entry.name.substringAfterLast('.', "").lowercase()
     Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .combinedClickable(
-                onClick = {
-                    if (selecting && !folder) onToggle()
-                    else onOpen()
-                },
-                onLongClick = onLongPress,
-            ),
+        modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (selecting) {
@@ -428,7 +478,11 @@ private fun EntryRow(
         }
         Box(
             modifier = Modifier
-                .clickable(onClick = if (selecting) onToggle else onCite)
+                .clickable(onClick = when {
+                    !selecting -> onCite
+                    folder -> onOpen
+                    else -> onToggle
+                })
                 .padding(start = if (selecting) 4.dp else 10.dp, top = 8.dp, bottom = 8.dp, end = 8.dp),
         ) {
             if (folder) IconBadge(Icons.Outlined.Folder, Tone.Warn, size = 38.dp) else IconBadge(fileIcon(ext), fileTone(ext), size = 38.dp)
@@ -436,11 +490,7 @@ private fun EntryRow(
         Row(
             modifier = Modifier
                 .weight(1f)
-                .clickable(onClick = {
-                    if (selecting && folder) onOpen()
-                    else if (selecting) onToggle()
-                    else onOpen()
-                })
+                .clickable(onClick = if (selecting && !folder) onToggle else onOpen)
                 .padding(top = 11.dp, bottom = 11.dp, end = 14.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {

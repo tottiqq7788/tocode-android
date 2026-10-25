@@ -380,6 +380,26 @@ fun childrenOf(entries: List<AppEntry>, parent: String): List<AppEntry> =
     entries.filter { it.parent() == parent }
         .sortedWith(compareBy<AppEntry>({ !it.isFolder() }, { it.name.lowercase() }))
 
+enum class FolderSelectMark { None, Some, All }
+
+fun folderSelectMark(childPaths: List<String>, selected: Set<String>): FolderSelectMark {
+    if (childPaths.isEmpty()) return FolderSelectMark.None
+    val hits = childPaths.count { it in selected }
+    return when (hits) {
+        0 -> FolderSelectMark.None
+        childPaths.size -> FolderSelectMark.All
+        else -> FolderSelectMark.Some
+    }
+}
+
+/** Add the listed paths, or remove only those paths once every one is already selected. */
+fun applyFolderSelectAll(childPaths: List<String>, selected: Set<String>): Set<String> {
+    if (childPaths.isEmpty() || folderSelectMark(childPaths, selected) != FolderSelectMark.All) {
+        return selected + childPaths
+    }
+    return selected - childPaths.toSet()
+}
+
 fun breadcrumb(path: String): List<String> {
     if (path.isEmpty()) return emptyList()
     val parts = path.split('/').filter { it.isNotEmpty() }
