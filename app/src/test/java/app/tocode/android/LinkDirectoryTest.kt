@@ -368,6 +368,53 @@ class LinkDirectoryTest {
         assertEquals("看这个", coerceAttachmentTokens(pending, pending.removeRange(pendingSpan.end - 1, pendingSpan.end)))
         assertEquals(setOf("对话附件-图片/965.jpg"), referencedAttachmentPaths(text))
         assertEquals("@对话附件-图片/965.jpg", attachmentMention("对话附件-图片/965.jpg"))
+        assertEquals(
+            "对话附件-文件/a.txt",
+            attachmentSpans("@对话附件-文件/a.txt“后面").single().path,
+        )
+        assertEquals(
+            "对话附件-文件/a.txt",
+            attachmentSpans("前@对话附件-文件/a.txt”后").single().path,
+        )
+    }
+
+    @Test
+    fun composerKeepsChineseQuotesAndComposition() {
+        val left = acceptComposerEdit(
+            "",
+            ComposerEdit("“", 1, 1, compositionStart = 0, compositionEnd = 1),
+        )
+        assertEquals("“", left.text)
+        assertEquals(1, left.selectionStart)
+        assertEquals(1, left.selectionEnd)
+        assertEquals(0, left.compositionStart)
+        assertEquals(1, left.compositionEnd)
+
+        val pair = acceptComposerEdit(
+            "“",
+            ComposerEdit("“”", 1, 1, compositionStart = 0, compositionEnd = 2),
+        )
+        assertEquals("“”", pair.text)
+        assertEquals(1, pair.selectionStart)
+        assertEquals(1, pair.selectionEnd)
+        assertEquals(0, pair.compositionStart)
+        assertEquals(2, pair.compositionEnd)
+
+        val rewritten = acceptComposerEdit(
+            "这张@对话附件-图片/965.jpg图片是啥？",
+            ComposerEdit(
+                "这张@对话附件-图片/965.jp图片是啥？",
+                selectionStart = 18,
+                selectionEnd = 18,
+                compositionStart = 17,
+                compositionEnd = 18,
+            ),
+        )
+        assertEquals("这张图片是啥？", rewritten.text)
+        assertEquals(2, rewritten.selectionStart)
+        assertEquals(2, rewritten.selectionEnd)
+        assertNull(rewritten.compositionStart)
+        assertNull(rewritten.compositionEnd)
     }
 
     @Test

@@ -92,7 +92,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -446,8 +445,10 @@ private val suggestions = listOf(
 
 @Composable
 fun ChatScreen(controller: RemoteController, link: AppLink, desk: AppDesk, session: AppSession) {
-    var draft by rememberSaveable(session.id) { mutableStateOf("") }
-    var cursor by remember(session.id) { mutableIntStateOf(0) }
+    var field by rememberSaveable(session.id, stateSaver = TextFieldValue.Saver) {
+        mutableStateOf(TextFieldValue())
+    }
+    val draft = field.text
     val attachments = remember(session.id) { mutableStateListOf<ChatAttachment>() }
     var uploading by remember(session.id) { mutableStateOf(false) }
     DisposableEffect(session.id) {
@@ -456,13 +457,13 @@ fun ChatScreen(controller: RemoteController, link: AppLink, desk: AppDesk, sessi
         }
     }
     var pinned by remember(session.id) { mutableStateOf<Long?>(null) }
+    fun setDraft(text: String, cursor: Int = text.length) {
+        field = TextFieldValue(text, TextRange(cursor.coerceIn(0, text.length)))
+    }
     val restore = desk.restoreDraft
     LaunchedEffect(restore) {
         if (restore.isNotEmpty()) {
-            if (draft.isBlank()) {
-                draft = restore
-                cursor = restore.length
-            }
+            if (draft.isBlank()) setDraft(restore)
             desk.restoreDraft = ""
         }
     }
@@ -472,9 +473,9 @@ fun ChatScreen(controller: RemoteController, link: AppLink, desk: AppDesk, sessi
             desk.notice = "消息太长，放不下这个文件"
             return false
         }
-        val at = cursor.coerceIn(0, draft.length)
-        draft = draft.substring(0, at) + token + draft.substring(at)
-        cursor = at + token.length
+        val at = field.selection.end.coerceIn(0, draft.length)
+        val next = draft.substring(0, at) + token + draft.substring(at)
+        setDraft(next, at + token.length)
         attachments.add(file)
         return true
     }
@@ -487,12 +488,18 @@ fun ChatScreen(controller: RemoteController, link: AppLink, desk: AppDesk, sessi
         val mention = attachmentMention(path)
         val at = draft.indexOf(token)
         if (at < 0) return
-        draft = draft.replace(token, mention)
-        if (cursor > at) cursor = (cursor + mention.length - token.length).coerceIn(0, draft.length)
+        val next = draft.replace(token, mention)
+        val cursor = field.selection.end
+        val nextCursor = if (cursor > at) {
+            (cursor + mention.length - token.length).coerceIn(0, next.length)
+        } else {
+            cursor.coerceIn(0, next.length)
+        }
+        setDraft(next, nextCursor)
     }
     fun removeProvisional(id: String) {
-        draft = draft.replace(provisionalToken(id), "")
-        cursor = cursor.coerceIn(0, draft.length)
+        val next = draft.replace(provisionalToken(id), "")
+        setDraft(next, field.selection.end.coerceIn(0, next.length))
         attachments.removeAll { it.id == id }
     }
     fun openAttachment(path: String) {
@@ -552,10 +559,7 @@ fun ChatScreen(controller: RemoteController, link: AppLink, desk: AppDesk, sessi
         Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
             when {
                 desk.turnsLoading && desk.turns.isEmpty() -> LoadingState("正在读取对话…", Modifier.align(Alignment.Center))
-                desk.turns.isEmpty() && !desk.sending -> ChatWelcome(onPick = {
-                    draft = it
-                    cursor = it.length
-                })
+                desk.turns.isEmpty() && !desk.sending -> ChatWelcome(onPick = { setDraft(it) })
                 else -> MessageList(
                     sessionID = desk.openSession?.id ?: "",
                     pageIndex = pageIndex,
@@ -591,12 +595,8 @@ fun ChatScreen(controller: RemoteController, link: AppLink, desk: AppDesk, sessi
             }
         }
         Composer(
-            draft = draft,
-            cursor = cursor,
-            onDraft = { text, nextCursor ->
-                draft = text
-                cursor = nextCursor
-            },
+            value = field,
+            onValueChange = { field = it },
             chipNames = chipNames,
             onOpenPath = { openAttachment(it) },
             onPickImage = {
@@ -641,14 +641,12 @@ fun ChatScreen(controller: RemoteController, link: AppLink, desk: AppDesk, sessi
                     uploading = false
                     if (ok) {
                         attachments.forEach { controller.finishAttachment(it.id) }
-                        draft = ""
-                        cursor = 0
+                        setDraft("")
                         attachments.clear()
                         pinned = null
                     } else {
                         desk.restoreDraft = ""
-                        draft = revised
-                        cursor = cursor.coerceIn(0, revised.length)
+                        setDraft(revised, field.selection.end.coerceIn(0, revised.length))
                         val updated = landedAttachments(attachments.toList(), landed)
                         attachments.clear()
                         attachments.addAll(updated)
@@ -693,10 +691,7 @@ fun ChatScreen(controller: RemoteController, link: AppLink, desk: AppDesk, sessi
                     onQuote = { absolute ->
                         val next = appendCitation(draft, absolute)
                         if (next == null) desk.notice = "消息太长，放不下这条路径"
-                        else {
-                            draft = next
-                            cursor = next.length
-                        }
+                        else setDraft(next)
                     },
                 )
             }
@@ -1271,9 +1266,8 @@ private fun replyText(text: String, entries: List<AppEntry>, onOpenPath: (PathSp
 
 @Composable
 private fun Composer(
-    draft: String,
-    cursor: Int,
-    onDraft: (String, Int) -> Unit,
+    value: TextFieldValue,
+    onValueChange: (TextFieldValue) -> Unit,
     chipNames: Map<String, String>,
     onOpenPath: (String) -> Unit,
     onPickImage: () -> Unit,
@@ -1290,6 +1284,7 @@ private fun Composer(
     placeholder: String,
     onSend: () -> Unit,
 ) {
+    val draft = value.text
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -1347,12 +1342,32 @@ private fun Composer(
                 val result = layout
                 if (result != null) AttachmentChipLayer(result, chipHolder.chips, onOpen = null)
                 BasicTextField(
-                    value = TextFieldValue(draft, TextRange(cursor.coerceIn(0, draft.length))),
+                    value = value,
                     onValueChange = { next ->
-                        val limited = next.text.take(4000)
-                        val coerced = coerceAttachmentTokens(draft, limited)
-                        val removed = limited.length - coerced.length
-                        onDraft(coerced, (next.selection.end - removed).coerceIn(0, coerced.length))
+                        val accepted = acceptComposerEdit(
+                            previousText = value.text,
+                            incoming = ComposerEdit(
+                                text = next.text,
+                                selectionStart = next.selection.start,
+                                selectionEnd = next.selection.end,
+                                compositionStart = next.composition?.start,
+                                compositionEnd = next.composition?.end,
+                            ),
+                        )
+                        val composition = if (
+                            accepted.compositionStart != null && accepted.compositionEnd != null
+                        ) {
+                            TextRange(accepted.compositionStart, accepted.compositionEnd)
+                        } else {
+                            null
+                        }
+                        onValueChange(
+                            TextFieldValue(
+                                text = accepted.text,
+                                selection = TextRange(accepted.selectionStart, accepted.selectionEnd),
+                                composition = composition,
+                            )
+                        )
                     },
                     enabled = fieldEnabled,
                     textStyle = MaterialTheme.typography.bodyLarge.copy(color = Ink),

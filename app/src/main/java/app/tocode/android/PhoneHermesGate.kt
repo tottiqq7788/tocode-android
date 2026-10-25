@@ -213,6 +213,56 @@ fun coerceAttachmentTokens(before: String, after: String): String {
     return before.substring(0, start) + replacement + before.substring(end)
 }
 
+/** 会话输入框一次按键后的文字、选区和组合区。不依赖 Compose，方便 JVM 单测。 */
+data class ComposerEdit(
+    val text: String,
+    val selectionStart: Int,
+    val selectionEnd: Int,
+    val compositionStart: Int? = null,
+    val compositionEnd: Int? = null,
+)
+
+/**
+ * 接受输入法这次改动。文本没被截断、也没被附件标记改写时，原样留下选区和组合区；
+ * 否则清掉组合区，光标落到新旧字符串第一个分叉处。
+ */
+fun acceptComposerEdit(previousText: String, incoming: ComposerEdit, limit: Int = 4000): ComposerEdit {
+    val limited = incoming.text.take(limit)
+    val coerced = coerceAttachmentTokens(previousText, limited)
+    if (coerced == incoming.text) {
+        val composition = when {
+            incoming.compositionStart == null || incoming.compositionEnd == null -> null
+            else -> {
+                val from = incoming.compositionStart.coerceIn(0, coerced.length)
+                val to = incoming.compositionEnd.coerceIn(0, coerced.length)
+                if (from == to) null else from to to
+            }
+        }
+        return ComposerEdit(
+            text = coerced,
+            selectionStart = incoming.selectionStart.coerceIn(0, coerced.length),
+            selectionEnd = incoming.selectionEnd.coerceIn(0, coerced.length),
+            compositionStart = composition?.first,
+            compositionEnd = composition?.second,
+        )
+    }
+    val fork = firstDiff(incoming.text, coerced).coerceIn(0, coerced.length)
+    return ComposerEdit(
+        text = coerced,
+        selectionStart = fork,
+        selectionEnd = fork,
+        compositionStart = null,
+        compositionEnd = null,
+    )
+}
+
+private fun firstDiff(left: String, right: String): Int {
+    val limit = minOf(left.length, right.length)
+    var index = 0
+    while (index < limit && left[index] == right[index]) index++
+    return index
+}
+
 private fun attachmentNameEnd(text: String, start: Int): Int {
     var index = start
     var sawCjk = false
@@ -248,7 +298,8 @@ private fun isCjk(ch: Char): Boolean {
 }
 
 private fun isAttachmentBoundary(ch: Char): Boolean =
-    ch.isWhitespace() || ch == '@' || ch == '/' || ch.code < 32 || ch in "，。？！、；：,!?;:()（）【】[]「」《》<>"
+    ch.isWhitespace() || ch == '@' || ch == '/' || ch.code < 32 ||
+        ch in "，。？！、；：,!?;:()（）【】[]「」《》<>“”‘’"
 
 fun attachmentFileName(display: String, fallback: String): String {
     val name = display.trim()
