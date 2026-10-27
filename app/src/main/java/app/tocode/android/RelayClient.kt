@@ -71,7 +71,8 @@ class RelayClient(private val http: OkHttpClient = OkHttpClient.Builder()
             corrId = corr,
             detail = mapOf("host" to relay.trimEnd('/').substringAfter("://").substringBefore('/')),
         )
-        val request = Request.Builder().url(socketURL(relay, token)).build()
+        val request = Request.Builder().url(socketURL(relay)).build()
+        var announced = false
         return http.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: okhttp3.Response) {
                 DiagnosticLog.event(
@@ -80,11 +81,18 @@ class RelayClient(private val http: OkHttpClient = OkHttpClient.Builder()
                     corrId = corr,
                     detail = mapOf("http" to response.code),
                 )
-                onConnection(true)
+                val auth = JSONObject()
+                auth.put("op", "auth")
+                auth.put("token", token)
+                webSocket.send(auth.toString())
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
                 val json = runCatching { JSONObject(text) }.getOrNull() ?: return
+                if (!announced && json.optString("op") == "ready") {
+                    announced = true
+                    onConnection(true)
+                }
                 onMessage(json)
             }
 
@@ -120,9 +128,9 @@ class RelayClient(private val http: OkHttpClient = OkHttpClient.Builder()
     }
 }
 
-fun socketURL(relay: String, token: String): String {
+fun socketURL(relay: String): String {
     val base = relay.trimEnd('/').replaceFirst("https://", "wss://").replaceFirst("http://", "ws://")
-    return "$base/v1/ws?token=$token"
+    return "$base/v1/ws"
 }
 
 data class RemoteButton(val id: String, val name: String, val detail: String, val icon: String)
