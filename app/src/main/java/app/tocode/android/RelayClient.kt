@@ -10,6 +10,11 @@ import okio.ByteString
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
+const val WS_CLOSE_SUPERSEDED = 4001
+const val SUPERSEDED_NOTICE = "这条关联已在另一处打开"
+
+fun shouldScheduleReconnect(closeCode: Int): Boolean = closeCode != WS_CLOSE_SUPERSEDED
+
 class RelayClient(private val http: OkHttpClient = OkHttpClient.Builder()
     .pingInterval(20, TimeUnit.SECONDS)
     .build()
@@ -62,7 +67,7 @@ class RelayClient(private val http: OkHttpClient = OkHttpClient.Builder()
         linkId: String = "",
         onMessage: (JSONObject) -> Unit,
         onBinary: (ByteArray) -> Unit = {},
-        onConnection: (Boolean) -> Unit = {},
+        onConnection: (Boolean, Int) -> Unit = { _, _ -> },
     ): WebSocket {
         val corr = DiagnosticLog.bumpConnectionCorr()
         DiagnosticLog.event(
@@ -91,7 +96,7 @@ class RelayClient(private val http: OkHttpClient = OkHttpClient.Builder()
                 val json = runCatching { JSONObject(text) }.getOrNull() ?: return
                 if (!announced && json.optString("op") == "ready") {
                     announced = true
-                    onConnection(true)
+                    onConnection(true, 0)
                 }
                 onMessage(json)
             }
@@ -108,7 +113,7 @@ class RelayClient(private val http: OkHttpClient = OkHttpClient.Builder()
                     detail = mapOf("code" to code, "reason" to reason.take(120)),
                 )
                 webSocket.close(code, reason)
-                onConnection(false)
+                onConnection(false, code)
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: okhttp3.Response?) {
@@ -122,7 +127,7 @@ class RelayClient(private val http: OkHttpClient = OkHttpClient.Builder()
                         "http" to (response?.code ?: 0),
                     ),
                 )
-                onConnection(false)
+                onConnection(false, 0)
             }
         })
     }

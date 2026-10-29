@@ -221,6 +221,7 @@ data class LinkState(val label: String, val tone: Tone)
 
 fun linkState(online: Boolean?, desk: AppDesk): LinkState = when {
     online == null -> LinkState("连接中", Tone.Info)
+    desk.superseded && online != true -> LinkState(SUPERSEDED_NOTICE, Tone.Bad)
     !online -> LinkState("离线", Tone.Bad)
     desk.macOffline -> LinkState("Mac 不在线", Tone.Bad)
     desk.installed == null -> LinkState("在线", Tone.Good)

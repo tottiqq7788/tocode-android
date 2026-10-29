@@ -207,6 +207,17 @@ fun SessionsTab(
                     }
                 }
             }
+        } else if (desk.superseded && online != true) {
+            item {
+                EmptyState(
+                    icon = Icons.Outlined.CloudOff,
+                    title = SUPERSEDED_NOTICE,
+                    subtitle = "这个页面不再自动抢回。点下面可以重新接管。",
+                    tone = Tone.Bad,
+                    action = "重新接管",
+                    onAction = { controller.refreshCurrent(link.id) },
+                )
+            }
         } else if (online == false) {
             item {
                 EmptyState(
@@ -273,6 +284,7 @@ private fun ReadyCard(desk: AppDesk, onCreate: () -> Unit) {
 private fun HermesHero(desk: AppDesk, online: Boolean?, onCreate: () -> Unit) {
     val ready = desk.canChat
     val (title, subtitle) = when {
+        desk.superseded && online != true -> SUPERSEDED_NOTICE to "这个页面不再自动抢回。再次打开应用后会再连一次。"
         online == null && desk.installed == null -> "正在连接…" to "正在连接这台 Mac。"
         online == false && desk.installed == null -> "Mac 离线" to "恢复连接后会自动同步 Hermes 状态。"
         desk.macOffline -> "Mac 不在线" to "请确认 Mac 上的 Tocode 已打开，连上后会自动同步。"
@@ -548,6 +560,7 @@ fun ChatScreen(controller: RemoteController, link: AppLink, desk: AppDesk, sessi
             onDirectory = { showFiles = true },
         )
         val banner = when {
+            desk.superseded && online != true -> SUPERSEDED_NOTICE to Tone.Warn
             desk.notice.isNotBlank() -> desk.notice to if (chatNoticeToneIsWarn(desk.notice)) Tone.Warn else Tone.Bad
             online == false -> "这台 Mac 离线了，正在重连…" to Tone.Warn
             desk.installed == true && !desk.running -> "这台电脑的 Hermes 没开" to Tone.Warn

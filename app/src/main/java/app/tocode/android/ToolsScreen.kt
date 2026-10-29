@@ -637,7 +637,12 @@ fun ControlTab(controller: RemoteController, link: AppLink, online: Boolean?) {
         }
         item { SectionTabs(section) { section = it } }
         if (online != true) {
-            item { Banner(if (online == null) "正在连接这台 Mac…" else "这台 Mac 离线，遥控暂时不可用", if (online == null) Tone.Info else Tone.Bad) }
+            val text = when {
+                online == null -> "正在连接这台 Mac…"
+                controller.desk(link.id).superseded -> SUPERSEDED_NOTICE
+                else -> "这台 Mac 离线，遥控暂时不可用"
+            }
+            item { Banner(text, if (online == null) Tone.Info else Tone.Bad) }
         }
         if (section == "windows") {
             when {

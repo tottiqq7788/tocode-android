@@ -9,6 +9,18 @@ import java.io.File
 
 class LinkDirectoryTest {
     @Test
+    fun supersededCloseDoesNotScheduleReconnect() {
+        assertFalse(shouldScheduleReconnect(WS_CLOSE_SUPERSEDED))
+        assertTrue(shouldScheduleReconnect(1006))
+        assertTrue(shouldScheduleReconnect(0))
+        val desk = AppDesk()
+        desk.superseded = true
+        assertEquals(SUPERSEDED_NOTICE, linkState(false, desk).label)
+        desk.superseded = false
+        assertEquals("离线", linkState(false, desk).label)
+    }
+
+    @Test
     fun onePhoneKeepsManyMacs() {
         val directory = LinkDirectory()
         directory.upsert(link("a", "Mac A"))

@@ -28,6 +28,7 @@ class AppDesk {
     var projects by mutableStateOf<List<AppProject>>(emptyList())
     var projectsLoaded by mutableStateOf(false)
     var macOffline by mutableStateOf(false)
+    var superseded by mutableStateOf(false)
     var openProject by mutableStateOf<AppProject?>(null)
     var sessions by mutableStateOf<List<AppSession>>(emptyList())
     var sessionsLoaded by mutableStateOf(false)
@@ -144,6 +145,7 @@ class RemoteController(
     private val fileJobs = ArrayDeque<() -> Unit>()
     private var fileJobActive = false
     private val sockets = linkedMapOf<String, WebSocket>()
+    private val yielded = mutableSetOf<String>()
     private val retryDelay = linkedMapOf<String, Long>()
     private val statusRetry = mutableSetOf<String>()
     private var inboundDownload: InboundDownload? = null
@@ -174,7 +176,11 @@ class RemoteController(
     fun desk(id: String): AppDesk = desks.getOrPut(id) { AppDesk() }
 
     fun ensureConnected() {
-        directory.all().filter { online[it.id] != true }.forEach { connect(it) }
+        directory.all().filter { online[it.id] != true }.forEach { link ->
+            val socket = sockets[link.id]
+            if (socket != null && online[link.id] == null) return@forEach
+            connect(link)
+        }
         selected()?.let { if (online[it.id] == true) refreshApp(it.id) }
     }
 
@@ -1269,6 +1275,10 @@ class RemoteController(
     }
 
     private fun connect(link: AppLink) {
+        yielded.remove(link.id)
+        val desk = desk(link.id)
+        desk.superseded = false
+        if (desk.notice == SUPERSEDED_NOTICE) desk.notice = ""
         sockets.remove(link.id)?.close(1000, "reconnect")
         val previousOnline = online[link.id]
         online.remove(link.id)
@@ -1290,9 +1300,13 @@ class RemoteController(
             onBinary = { bytes ->
                 main.post { if (sockets[link.id] === socket) handleBinary(link.id, bytes) }
             },
-        ) { connected ->
+        ) { connected, closeCode ->
             main.post {
                 if (sockets[link.id] !== socket) return@post
+                if (!connected && (!shouldScheduleReconnect(closeCode) || link.id in yielded)) {
+                    yieldLink(link)
+                    return@post
+                }
                 val was = online[link.id]
                 online[link.id] = connected
                 if (was != connected) {
@@ -1303,6 +1317,8 @@ class RemoteController(
                     )
                 }
                 if (connected) {
+                    yielded.remove(link.id)
+                    desk(link.id).superseded = false
                     retryDelay.remove(link.id)
                     resumeAfterReconnect(link.id)
                     refreshApp(link.id)
@@ -1316,11 +1332,27 @@ class RemoteController(
         sockets[link.id] = socket
     }
 
+    private fun yieldLink(link: AppLink) {
+        val first = yielded.add(link.id)
+        online[link.id] = false
+        val desk = desk(link.id)
+        desk.superseded = true
+        if (first) dropWaits(link.id)
+        desk.notice = SUPERSEDED_NOTICE
+        retryDelay.remove(link.id)
+        DiagnosticLog.event(
+            "state.online",
+            linkId = link.id,
+            detail = mapOf("to" to "superseded"),
+        )
+    }
+
     private fun scheduleRetry(link: AppLink, failed: WebSocket?) {
         val delay = retryDelay[link.id] ?: RETRY_START_MS
         retryDelay[link.id] = (delay * 2).coerceAtMost(RETRY_MAX_MS)
         DiagnosticLog.event("ws.retry", linkId = link.id, detail = mapOf("retry_ms" to delay))
         main.postDelayed({
+            if (link.id in yielded) return@postDelayed
             if (sockets[link.id] === failed && directory.all().any { it.id == link.id }) connect(link)
         }, delay)
     }
